@@ -202,14 +202,56 @@ public class Wall {
                 return data.toString();
             }
 
+            if ("search".equals(sub)) {
+                JSONObject p = new JSONObject();
+                p.put("code", q.getOrDefault("code", ""));
+                JSONObject d = api("accountData", p);
+                JSONObject data = d.optJSONObject("data");
+                return (data != null ? data : d).toString();
+            }
+
             if ("list".equals(sub)) {
                 JSONObject p = new JSONObject();
                 p.put("page", Integer.parseInt(page));
                 p.put("acc_id", acc);
+                String cls = q.get("class");
+                if (cls != null && !cls.isEmpty()) p.put("class", Integer.parseInt(cls));
                 JSONObject d = api("pageIndex", p);
                 JSONObject data = d.optJSONObject("data");
                 if (data == null) data = d;
                 data.put("list", decorateList(data.optJSONArray("list")));
+                return data.toString();
+            }
+
+            if ("albums".equals(sub)) {
+                JSONObject p = new JSONObject();
+                p.put("page", Integer.parseInt(page));
+                p.put("acc_id", acc);
+                JSONObject d = api("albumList", p);
+                JSONObject data = d.optJSONObject("data");
+                if (data == null) data = d;
+                JSONArray arr = data.optJSONArray("list");
+                if (arr != null) {
+                    JSONArray out = new JSONArray();
+                    for (int i = 0; i < arr.length(); i++) {
+                        JSONObject a = arr.optJSONObject(i);
+                        if (a == null) continue;
+                        JSONObject cover = a.optJSONObject("cover");
+                        if (cover != null) {
+                            JSONArray cl = cover.optJSONArray("list");
+                            if (cl != null) {
+                                JSONArray co = new JSONArray();
+                                for (int k = 0; k < cl.length(); k++) {
+                                    JSONObject c = cl.optJSONObject(k);
+                                    if (c != null) co.put(decorate(c));
+                                }
+                                cover.put("list", co);
+                            }
+                        }
+                        out.put(a);
+                    }
+                    data.put("list", out);
+                }
                 return data.toString();
             }
 
@@ -227,6 +269,7 @@ public class Wall {
                 p.put("page", Integer.parseInt(page));
                 p.put("alb_id", q.getOrDefault("alb_id", "0"));
                 p.put("acc_id", acc);
+                p.put("sort", q.getOrDefault("sort", "1"));
                 JSONObject d = api("albumDataPage", p);
                 JSONObject data = d.optJSONObject("data");
                 if (data == null) data = d;
@@ -280,26 +323,44 @@ public class Wall {
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;background:#0f1115;color:#e8e8ec;font:15px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
-header{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);background:rgba(15,17,21,.86);border-bottom:1px solid #1e222a}
-.hd{padding:12px 16px 8px;display:flex;align-items:center;gap:10px}
-.logo{font-size:17px;font-weight:700;background:linear-gradient(90deg,#638dff,#b06bff);-webkit-background-clip:text;background-clip:text;color:transparent}
-.sub{font-size:11px;color:#6b7280;margin-left:auto}
-.search{display:flex;gap:8px;padding:0 16px 10px}
+header{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);background:rgba(15,17,21,.9);border-bottom:1px solid #1e222a}
+.hd{padding:10px 16px 6px;display:flex;align-items:center;gap:10px}
+.logo{font-size:16px;font-weight:700;background:linear-gradient(90deg,#638dff,#b06bff);-webkit-background-clip:text;background-clip:text;color:transparent}
+.stat{font-size:11px;color:#6b7280;margin-left:auto}
+.search{display:flex;gap:8px;padding:0 16px 8px}
 .search input{flex:1;padding:9px 14px;border-radius:10px;border:1px solid #262b36;background:#171a21;color:#e8e8ec;font-size:13px;outline:none}
-.search button{padding:9px 16px;border-radius:10px;background:linear-gradient(135deg,#638dff,#8b5cf6);color:#fff;border:none;font-size:13px}
-.authors{display:flex;gap:10px;padding:4px 16px 12px;overflow-x:auto;scrollbar-width:none}
+.search input:focus{border-color:#638dff}
+.search button{padding:9px 16px;border-radius:10px;background:linear-gradient(135deg,#638dff,#8b5cf6);color:#fff;border:none;font-size:13px;cursor:pointer}
+.who{display:none;align-items:center;gap:10px;padding:4px 16px 10px}
+.who.on{display:flex}
+.who img{width:40px;height:40px;border-radius:50%;object-fit:cover;background:#1a1e27}
+.who .n{font-size:14px;font-weight:600}
+.who .d{font-size:11px;color:#7c8494}
+.tabs{display:flex;gap:8px;padding:0 16px 10px;overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{flex:0 0 auto;padding:6px 14px;border-radius:999px;background:#1a1e27;color:#a8aebc;font-size:13px;border:1px solid #262b36;cursor:pointer;white-space:nowrap}
+.tab.on{background:linear-gradient(135deg,#638dff,#8b5cf6);color:#fff;border-color:transparent}
+.authors{display:flex;gap:10px;padding:4px 16px 10px;overflow-x:auto;scrollbar-width:none}
 .authors::-webkit-scrollbar{display:none}
-.au{flex:0 0 auto;width:64px;text-align:center;cursor:pointer}
-.au img{width:52px;height:52px;border-radius:50%;object-fit:cover;border:2px solid #262b36;background:#1a1e27;display:block;margin:0 auto}
-.au.on img{border-color:#638dff}
-.au span{display:block;font-size:10px;color:#8b93a3;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-main{padding:12px 12px 90px}
+.au{flex:0 0 auto;width:62px;text-align:center;cursor:pointer}
+.au img{width:50px;height:50px;border-radius:50%;object-fit:cover;border:2px solid #262b36;background:#1a1e27;display:block;margin:0 auto}
+.au span{display:block;font-size:10px;color:#8b93a3;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.albs{display:none;gap:10px;padding:0 16px 12px;overflow-x:auto;scrollbar-width:none}
+.albs.on{display:flex}
+.albs::-webkit-scrollbar{display:none}
+.alb{flex:0 0 auto;width:132px;cursor:pointer;border-radius:12px;overflow:hidden;background:#171a21;border:1px solid #22273200}
+.alb.on{border-color:#638dff}
+.alb .cov{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#1f242e;height:88px}
+.alb .cov img{width:100%;height:43px;object-fit:cover;display:block}
+.alb .nm{font-size:11px;padding:6px 8px;color:#c9cfdb;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.alb .ct{font-size:10px;color:#6b7280;padding:0 8px 6px}
+main{padding:12px 12px 80px}
 .grid{column-count:2;column-gap:10px}
 @media(min-width:720px){.grid{column-count:3}}
 @media(min-width:1080px){.grid{column-count:4}}
 .card{break-inside:avoid;margin-bottom:10px;border-radius:14px;overflow:hidden;background:#171a21;position:relative;cursor:pointer}
-.card img{width:100%;display:block;background:#1f242e;min-height:80px}
-.card .meta{position:absolute;left:0;right:0;bottom:0;padding:16px 8px 6px;font-size:10px;color:#c9cfdb;background:linear-gradient(transparent,rgba(0,0,0,.72))}
+.card img{width:100%;display:block;background:#1f242e;min-height:70px}
+.card .meta{position:absolute;left:0;right:0;bottom:0;padding:14px 8px 5px;font-size:10px;color:#c9cfdb;background:linear-gradient(transparent,rgba(0,0,0,.72))}
 .card .badge{position:absolute;top:6px;right:6px;font-size:9px;padding:2px 6px;border-radius:6px;background:rgba(0,0,0,.6);color:#fff}
 .over{position:fixed;inset:0;background:#000;z-index:99;display:none;flex-direction:column}
 .over.on{display:flex}
@@ -309,20 +370,26 @@ main{padding:12px 12px 90px}
 .btn.ghost{background:#22262f;color:#c9cfdb}
 .over .pic{flex:1;overflow:auto;display:flex;align-items:center;justify-content:center;padding:8px}
 .over .pic img{max-width:100%;max-height:100%;object-fit:contain}
-.empty{text-align:center;color:#5b6270;padding:60px 20px;font-size:13px}
+.empty{text-align:center;color:#5b6270;padding:50px 20px;font-size:13px}
 .loading{height:3px;background:linear-gradient(90deg,#638dff,#8b5cf6);position:fixed;top:0;left:0;width:0;transition:width .3s;z-index:50}
-#more{display:block;margin:18px auto 0;padding:11px 28px;border-radius:12px;background:#1a1e27;color:#a8aebc;border:1px solid #262b36;font-size:13px}
+#more{display:block;margin:16px auto 0;padding:11px 28px;border-radius:12px;background:#1a1e27;color:#a8aebc;border:1px solid #262b36;font-size:13px}
 #more:disabled{opacity:.4}
 .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(40,44,54,.96);color:#fff;padding:9px 18px;border-radius:10px;font-size:13px;opacity:0;transition:.25s;pointer-events:none;z-index:200}
 .toast.on{opacity:1}
 </style></head><body>
 <div class="loading" id="bar"></div>
 <header>
-  <div class="hd"><div class="logo">掘金壁纸</div><div class="sub" id="stat">加载中…</div></div>
+  <div class="hd"><div class="logo">掘金壁纸</div><div class="stat" id="stat">加载中…</div></div>
   <div class="search">
-    <input id="accInput" type="number" inputmode="numeric" placeholder="输入作者编号 acc_id，回车直达">
-    <button id="accGo">跳转</button>
+    <input id="inp" type="text" inputmode="numeric" placeholder="输入创作者口令（比如 556）">
+    <button id="go">搜索</button>
   </div>
+  <div class="who" id="who">
+    <img id="whoImg" src="" alt="">
+    <div><div class="n" id="whoName"></div><div class="d" id="whoDesc"></div></div>
+  </div>
+  <div class="tabs" id="tabs"></div>
+  <div class="albs" id="albs"></div>
   <div class="authors" id="authors"></div>
 </header>
 <main>
@@ -338,68 +405,127 @@ main{padding:12px 12px 90px}
 </div>
 <div class="toast" id="toast"></div>
 <script>
-var $=function(s){return document.querySelector(s)};
-var state={acc:1,page:1,loading:false,end:false,list:[]};
-function toast(t){var e=$('#toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('on')},1600);}
-function bar(p){$('#bar').style.width=p+'%';if(p>=100)setTimeout(function(){$('#bar').style.width='0'},300);}
-function get(u){return fetch(u).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()});}
-function boot(){
-  bar(30);
-  return get('/wall/api/home').then(function(d){
-    bar(70);
-    var rec=d.recommend||[], list=d.list||[];
-    var box=$('#authors');box.innerHTML='';
-    var all=document.createElement('div');all.className='au on';
-    all.innerHTML='<div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#638dff,#8b5cf6);display:flex;align-items:center;justify-content:center;font-size:13px;margin:0 auto;border:2px solid #262b36">全部</div><span>全部</span>';
-    all.onclick=function(){pick(1,all)};box.appendChild(all);
-    rec.slice(0,40).forEach(function(a){
-      var el=document.createElement('div');el.className='au';
-      el.innerHTML='<img loading="lazy" src="'+a.app_head_img+'"><span>'+(a.app_name||'')+'</span>';
-      el.title='acc_id='+a.acc_id;
-      el.onclick=function(){pick(a.acc_id,el)};
-      box.appendChild(el);
-    });
-    render(list);
-    $('#stat').textContent=list.length+' 张 · 作者 '+rec.length;
-    bar(100);
-  }).catch(function(e){
-    bar(100);$('#empty').style.display='block';
-    $('#empty').textContent='加载失败：'+e.message;
+var S={acc:0,code:'',cls:0,alb:0,page:1,loading:false,end:false};
+var CATS=[{title:'全部',class:0},{title:'手机壁纸',class:1},{title:'头像',class:2},{title:'表情包',class:3},{title:'背景',class:4},{title:'动态壁纸',class:5}];
+function $(s){return document.querySelector(s)}
+function toast(t){var e=$('#toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('on')},1600)}
+function bar(p){$('#bar').style.width=p+'%';if(p>=100)setTimeout(function(){$('#bar').style.width='0'},300)}
+function get(u){return fetch(u).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+
+function setCats(list){
+  var c=list&&list.length?list:CATS;
+  var box=$('#tabs');box.innerHTML='';
+  c.forEach(function(x){
+    var el=document.createElement('div');
+    el.className='tab'+(x.class===S.cls?' on':'');
+    el.textContent=x.title;
+    el.onclick=function(){
+      [].slice.call(box.children).forEach(function(y){y.classList.remove('on')});
+      el.classList.add('on');
+      S.cls=x.class;S.alb=0;S.page=1;S.end=false;
+      $('#grid').innerHTML='';loadList();
+    };
+    box.appendChild(el);
   });
 }
-function pick(id,el){
-  if(el){var p=el.parentNode;[].slice.call(p.children).forEach(function(x){x.classList.remove('on')});el.classList.add('on');}
-  else{$('#authors').innerHTML='';}
-  state.acc=id;state.page=1;state.end=false;
-  $('#grid').innerHTML='';state.list=[];
-  $('#accInput').value=id;
-  loadPage();
+
+function loadWho(acc,name,img,desc){
+  if(!acc)return;
+  S.acc=acc;
+  $('#who').classList.add('on');
+  $('#whoName').textContent=name||('acc_id '+acc);
+  $('#whoDesc').textContent=desc||'';
+  if(img)$('#whoImg').src=img;
 }
+
+function search(){
+  var v=$('#inp').value.trim();
+  if(!v){toast('请输入创作者口令');return}
+  bar(30);
+  get('/wall/api/search?code='+encodeURIComponent(v)).then(function(r){
+    var d=r&&r.data?r.data:r;
+    if(!d||d.status!==1){
+      bar(100);
+      toast(d&&d.show_tip?d.show_tip:'没找到这个口令');
+      return;
+    }
+    var a=d.acc_data||{};
+    S.code=d.code||v;S.cls=0;S.alb=0;S.page=1;S.end=false;
+    $('#grid').innerHTML='';
+    $('#albs').innerHTML='';$('#albs').classList.remove('on');
+    $('#authors').innerHTML='';
+    setCats(d.acc_class_list);
+    loadWho(a.acc_id,a.app_name,a.app_head_img,
+      '口令 '+(d.code||v)+' · '+(a.res_num||0)+' 张 · '+(a.alb_num||0)+' 个专辑');
+    $('#stat').textContent=(a.res_name||'')||'';
+    if(a.alb_num>0)loadAlbums();
+    loadList();
+    bar(100);
+  }).catch(function(e){bar(100);toast('搜索失败：'+e.message)});
+}
+
+function loadAlbums(){
+  get('/wall/api/albums?page=1&acc_id='+S.acc).then(function(r){
+    var d=r&&r.data?r.data:r;
+    var list=d.list||[];
+    if(!list.length)return;
+    var box=$('#albs');box.innerHTML='';box.classList.add('on');
+    list.forEach(function(a){
+      var el=document.createElement('div');
+      el.className='alb'+(S.alb===a.alb_id?' on':'');
+      var cov='';
+      var cl=(a.cover&&a.cover.list)||[];
+      for(var i=0;i<Math.min(4,cl.length);i++){
+        cov+='<img loading="lazy" src="'+esc(cl[i].url_thumb)+'">';
+      }
+      el.innerHTML='<div class="cov">'+cov+'</div><div class="nm">'+esc(a.name)+'</div><div class="ct">'+a.res_num+' 张</div>';
+      el.onclick=function(){
+        [].slice.call(box.children).forEach(function(y){y.classList.remove('on')});
+        el.classList.add('on');
+        S.alb=a.alb_id;S.page=1;S.end=false;
+        $('#grid').innerHTML='';loadList();
+      };
+      box.appendChild(el);
+    });
+  }).catch(function(){});
+}
+
+function loadList(){
+  if(S.loading||S.end||!S.acc)return;
+  S.loading=true;$('#more').disabled=true;$('#more').textContent='加载中…';bar(40);
+  var u;
+  if(S.alb){
+    u='/wall/api/album_data?alb_id='+S.alb+'&acc_id='+S.acc+'&page='+S.page;
+  }else{
+    u='/wall/api/list?acc_id='+S.acc+'&page='+S.page+'&class='+S.cls;
+  }
+  get(u).then(function(r){
+    var d=r&&r.data?r.data:r;
+    var list=d.list||[];
+    if(!list.length){S.end=true;}
+    else{S.page++;render(list);}
+  }).catch(function(e){toast('加载失败：'+e.message)}).then(function(){
+    S.loading=false;bar(100);$('#more').disabled=false;
+    $('#more').textContent=S.end?'没有更多了':'加载更多';
+    if(!S.end)$('#stat').textContent='第 '+(S.page-1)+' 页';
+  });
+}
+
 function render(items){
   var g=$('#grid');
   items.forEach(function(it){
     var c=document.createElement('div');c.className='card';
-    var src=it.url_thumb||it.url_img,date=(it.date||'').slice(0,10);
-    c.innerHTML='<img loading="lazy" src="'+src+'">'+(it.class===4?'<div class="badge">图集</div>':'')+'<div class="meta">'+date+' · #'+it.res_id+'</div>';
+    var src=it.url_thumb||it.url_img;
+    var date=(it.date||'').slice(0,10);
+    c.innerHTML='<img loading="lazy" src="'+esc(src)+'">'+(it.class===4?'<div class="badge">背景</div>':(it.class===3?'<div class="badge">表情</div>':''))+'<div class="meta">'+esc(date)+' · #'+it.res_id+'</div>';
     c.onclick=function(){openBig(it)};
     g.appendChild(c);
   });
-  $('#empty').style.display=(state.list.length===0&&!state.loading)?'block':'none';
-  $('#empty').textContent=state.end&&state.list.length===0?'这个作者还没有图':'这里还什么都没有';
+  $('#empty').style.display=(g.children.length===0&&!S.loading)?'block':'none';
+  if(S.end)$('#empty').textContent='这个分类下没有图';
 }
-function loadPage(){
-  if(state.loading||state.end)return;
-  state.loading=true;$('#more').disabled=true;$('#more').textContent='加载中…';bar(40);
-  get('/wall/api/list?page='+state.page+'&acc_id='+state.acc).then(function(d){
-    var list=d.list||[];
-    if(list.length===0){state.end=true;}
-    else{state.list=state.list.concat(list);render(list);state.page++;}
-  }).catch(function(e){toast('加载失败：'+e.message)}).then(function(){
-    state.loading=false;bar(100);$('#more').disabled=false;
-    $('#more').textContent=state.end?'没有更多了':'加载更多';
-    $('#stat').textContent=state.list.length+' 张 · acc_id='+state.acc;
-  });
-}
+
 function openBig(it){
   var u=it.url_img||it.url_preview;
   $('#oimg').src=it.url_preview||u;
@@ -412,21 +538,44 @@ function openBig(it){
   };
   $('#over').classList.add('on');
 }
+
+function boot(){
+  get('/wall/api/home').then(function(d){
+    var list=d.list||[],rec=d.recommend||[];
+    if(list.length){render(list);}
+    var box=$('#authors');
+    rec.slice(0,30).forEach(function(a){
+      var el=document.createElement('div');el.className='au';
+      el.innerHTML='<img loading="lazy" src="'+esc(a.app_head_img)+'"><span>'+esc(a.app_name)+'</span>';
+      el.onclick=function(){
+        S.acc=a.acc_id;S.code='';S.cls=0;S.alb=0;S.page=1;S.end=false;
+        $('#grid').innerHTML='';
+        setCats(CATS);
+        loadWho(a.acc_id,a.app_name,a.app_head_img,'acc_id '+a.acc_id);
+        $('#albs').innerHTML='';$('#albs').classList.remove('on');
+        $('#inp').value='';
+        loadList();
+      };
+      box.appendChild(el);
+    });
+    $('#stat').textContent='推荐 '+rec.length+' 位创作者';
+    setCats(CATS);
+  }).catch(function(e){$('#stat').textContent='加载失败'});
+}
+
+$('#go').onclick=search;
+$('#inp').addEventListener('keydown',function(e){if(e.key==='Enter'||e.keyCode===13)search()});
 $('#oclose').onclick=function(){$('#over').classList.remove('on')};
 $('#over').onclick=function(e){if(e.target.id==='over')$('#over').classList.remove('on')};
-$('#more').onclick=loadPage;
-function goAcc(){
-  var v=parseInt($('#accInput').value,10);
-  if(!v||v<1){toast('请输入数字编号');return;}
-  pick(v,null);
-}
-$('#accGo').onclick=goAcc;
-$('#accInput').addEventListener('keydown',function(e){if(e.key==='Enter')goAcc()});
-boot().then(function(){loadPage()});
+$('#more').onclick=loadList;
 addEventListener('scroll',function(){
-  if(state.loading||state.end)return;
-  if(innerHeight+scrollY>document.body.offsetHeight-600)loadPage();
+  if(S.loading||S.end||!S.acc)return;
+  if(innerHeight+scrollY>document.body.offsetHeight-600)loadList();
 });
+boot();
+$('#more').style.display='none';
+setTimeout(function(){if(S.acc)$('#more').style.display='block'},1500);
 </script></body></html>
 """;
+
 }
