@@ -489,7 +489,7 @@ public class MiniServer {
     }
 
     private void sendRpc(OutputStream out, Object id, org.json.JSONObject result)
-            throws IOException {
+            throws Exception {
         org.json.JSONObject o = new org.json.JSONObject();
         o.put("jsonrpc", "2.0");
         if (id != null) o.put("id", id);
