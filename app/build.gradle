@@ -1,0 +1,38 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.rxw.xhsspy'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.rxw.xhsspy"
+        minSdk 21
+        // Xposed 模块 targetSdk 不要给太高，避免被系统按新分区存储规则限制
+        targetSdk 28
+        versionCode 1
+        versionName "1.0"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // 模块不需要签名混淆，LSPatch 会重新签它打包后的 App
+        }
+    }
+
+    packagingOptions {
+        resources.excludes += ['META-INF/*']
+    }
+}
+
+dependencies {
+    // Xposed API 只编译期用，绝不能打进包里
+    compileOnly 'de.robv.android.xposed:api:82'
+}

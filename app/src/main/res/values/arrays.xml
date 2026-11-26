@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 模块作用域：只对小红书生效 -->
+    <string-array name="xposedscope">
+        <item>com.xingin.xhs</item>
+    </string-array>
+</resources>

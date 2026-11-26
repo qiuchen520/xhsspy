@@ -1,0 +1,661 @@
+package com.rxw.xhsspy;
+
+import android.app.Application;
+import android.content.Context;
+import android.net.http.X509TrustManagerExtensions;
+import android.webkit.WebView;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.lang.reflect.Method;
+import java.security.cert.X509Certificate;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Enumeration;
+import java.util.Locale;
+import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+
+import de.robv.android.xposed.IXposedHookLoadPackage;
+import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XposedBridge;
+import de.robv.android.xposed.XposedHelpers;
+import de.robv.android.xposed.callbacks.XC_LoadPackage;
+
+/**
+ * XhsSpy — 小红书运行时侦察模块
+ *
+ * 只干三件事，干到极致：
+ *   1. 拆掉 SSL Pinning，把流量交给电脑上的 mitmproxy 去看
+ *   2. 记录所有 OkHttp / WebView 请求 URL，帮你定位小工具包的下载地址
+ *   3. 扫描 App 私有目录，把疑似小程序包原样导出到 /sdcard/XhsSpy/pkg/
+ *
+ * 第 3 条是关键：模块跑在小红书进程里，天生拥有小红书的文件权限。
+ * 小程序包下载落盘之后，不需要解密、不需要抓包，直接就能拿出来。
+ *
+ * 输出目录：/sdcard/XhsSpy/
+ *   net.log        所有请求 URL
+ *   webview.log    WebView 加载过的地址
+ *   pkg/           导出的小程序包 + 清单 manifest.txt
+ *   crash.log      hook 自身的异常（不影响 App 运行）
+ */
+public class XhsSpy implements IXposedHookLoadPackage {
+
+    static final String TAG = "XhsSpy";
+    static final String TARGET = "com.xingin.xhs";
+
+    // Android 10+ 分区存储下，/sdcard 根目录往往写不进去。
+    // 优先落到 App 专属外部目录（无需任何权限，adb pull 也能取），
+    // 再退到私有 files 目录。
+    static volatile File OUT = new File("/sdcard/XhsSpy");
+    static volatile File PKG_OUT = new File(OUT, "pkg");
+
+    // 单个文件导出上限，防止把 1GB 的缓存也搬出来
+    static final long MAX_PKG = 64L * 1024 * 1024;
+    static final long MIN_PKG = 8L * 1024;
+
+    static volatile Context sApp;
+    static volatile boolean sSwept = false;
+
+    static final String[] SKIP_EXT = {
+            ".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".mov", ".mp3",
+            ".ttf", ".otf", ".so", ".dex", ".apk", ".db", ".db-wal", ".db-shm",
+            ".xml", ".arsc", ".oat", ".vdex", ".art", ".odex"
+    };
+
+    static final String[] HOT_EXT = {
+            ".zip", ".pkg", ".wxapkg", ".rpkg", ".redpkg", ".mtpkg",
+            ".js", ".json", ".bin", ".tar", ".gz", ".7z", ".dat"
+    };
+
+    // 小程序包内部的标志性文件名（微信系 / 小红书系都覆盖）
+    static final String[] PKG_INNER_MARKS = {
+            "app-service", "page-frame", "__APP__", "app-config",
+            "redmini", "__subPageFrame__", "game.js", "game.json",
+            "miniprogram", "mini_tool", "minitool", "plugin.json",
+            "app-service.js", "workers.js"
+    };
+
+    // ------------------------------------------------------------ 入口
+
+    @Override
+    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lp) {
+        if (!TARGET.equals(lp.packageName)) return;
+
+        log("boot", "loaded pid=" + android.os.Process.myPid()
+                + " proc=" + lp.processName);
+
+        safe(() -> hookApplication(lp.classLoader), "hookApplication");
+        safe(() -> hookOkHttp(lp.classLoader), "hookOkHttp");
+        safe(() -> hookHttpUrlConnection(lp.classLoader), "hookHttpUrlConnection");
+        safe(() -> hookWebView(lp.classLoader), "hookWebView");
+        safe(() -> hookSslPinning(lp.classLoader), "hookSslPinning");
+        safe(() -> hookCertificatePinner(lp.classLoader), "hookCertificatePinner");
+        safe(() -> hookFileWrite(lp.classLoader), "hookFileWrite");
+    }
+
+    // ------------------------------------------------------------ 工具
+
+    interface Block { void run() throws Throwable; }
+
+    /** 选一个真的能写的输出目录 */
+    static void initOut(Context ctx) {
+        File cand = null;
+        try {
+            File ext = ctx.getExternalFilesDir(null);
+            if (ext != null) cand = new File(ext, "XhsSpy");
+        } catch (Throwable ignored) {}
+        if (cand == null) {
+            try {
+                cand = new File(ctx.getFilesDir(), "XhsSpy");
+            } catch (Throwable ignored) {}
+        }
+        if (cand != null && (cand.isDirectory() || cand.mkdirs())) {
+            OUT = cand;
+            PKG_OUT = new File(cand, "pkg");
+        }
+    }
+
+    static void safe(Block b, String name) {
+        try {
+            b.run();
+            log("hook", "ok " + name);
+        } catch (Throwable t) {
+            log("crash", "fail " + name + " : " + t);
+        }
+    }
+
+    static synchronized void log(String file, String line) {
+        try {
+            if (!OUT.exists()) OUT.mkdirs();
+            File f = new File(OUT, file + ".log");
+            FileOutputStream fos = new FileOutputStream(f, true);
+            String ts = new SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
+                    .format(new Date());
+            fos.write((ts + "  " + line + "\n").getBytes("UTF-8"));
+            fos.close();
+        } catch (Throwable ignored) {}
+    }
+
+    // ------------------------------------------------------------ Application
+
+    static void hookApplication(ClassLoader cl) {
+        XposedHelpers.findAndHookMethod(Application.class, "attach",
+                Context.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam p) {
+                        sApp = (Context) p.args[0];
+                        initOut(sApp);
+                        log("boot", "app attached: " + sApp.getPackageName());
+                        log("boot", "OUT=" + OUT.getAbsolutePath());
+                        new Thread(() -> {
+                            try {
+                                // 等 App 初始化完、小程序缓存落盘
+                                Thread.sleep(25000);
+                                sweep("boot");
+                            } catch (Throwable t) {
+                                log("crash", "sweep thread " + t);
+                            }
+                        }, "XhsSpySweep").start();
+                    }
+                });
+    }
+
+    // ------------------------------------------------------------ OkHttp
+
+    static void hookOkHttp(ClassLoader cl) {
+        Class<?> client = XposedHelpers.findClass("okhttp3.OkHttpClient", cl);
+        Class<?> request = XposedHelpers.findClass("okhttp3.Request", cl);
+
+        XposedHelpers.findAndHookMethod(client, "newCall", request,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam p) {
+                        try {
+                            Object req = p.args[0];
+                            String m = (String) XposedHelpers.callMethod(req, "method");
+                            String u = String.valueOf(XposedHelpers.callMethod(req, "url"));
+
+                            StringBuilder sb = new StringBuilder();
+                            sb.append(m).append(' ').append(u);
+
+                            // 请求体：小程序包下载、上报、登录都可能带
+                            try {
+                                Object body = XposedHelpers.callMethod(req, "body");
+                                if (body != null) {
+                                    Object contentType = XposedHelpers.callMethod(
+                                            body, "contentType");
+                                    long len = (Long) XposedHelpers.callMethod(
+                                            body, "contentLength");
+                                    if (contentType != null
+                                            && String.valueOf(contentType).contains("json")
+                                            && len > 0 && len < 200000) {
+                                        Object okioBuf = XposedHelpers.newInstance(
+                                                XposedHelpers.findClass("okio.Buffer", cl));
+                                        XposedHelpers.callMethod(body, "writeTo", okioBuf);
+                                        String s = (String) XposedHelpers.callMethod(
+                                                okioBuf, "readUtf8");
+                                        sb.append("\n    body: ").append(clip(s, 4000));
+                                        XposedHelpers.callMethod(okioBuf, "close");
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
+
+                            // 响应：execute 同步路径能拿到 peekBody
+                            logNet(sb.toString());
+                        } catch (Throwable t) {
+                            log("crash", "okhttp " + t);
+                        }
+                    }
+                });
+
+        // 同步请求的响应体
+        try {
+            Class<?> realCall = XposedHelpers.findClass("okhttp3.RealCall", cl);
+            XposedHelpers.findAndHookMethod(realCall, "execute", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam p) {
+                    dumpResponse(p.getResult(), cl);
+                }
+            });
+        } catch (Throwable ignored) {}
+
+        // 异步请求：hook AsyncCall 的 run，结束后从这里拿不到 body，只记 URL
+        try {
+            Class<?> asyncCall = XposedHelpers.findClass("okhttp3.RealCall$AsyncCall", cl);
+            XposedHelpers.findAndHookMethod(asyncCall, "run", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam p) {
+                    try {
+                        Object call = XposedHelpers.getObjectField(p.thisObject, "this$0");
+                        Object req = XposedHelpers.callMethod(call, "request");
+                        String u = String.valueOf(XposedHelpers.callMethod(req, "url"));
+                        logNet("ASYNC " + u);
+                    } catch (Throwable ignored) {}
+                }
+            });
+        } catch (Throwable ignored) {}
+    }
+
+    static void dumpResponse(Object resp, ClassLoader cl) {
+        if (resp == null) return;
+        try {
+            Object req = XposedHelpers.callMethod(resp, "request");
+            String u = String.valueOf(XposedHelpers.callMethod(req, "url"));
+            Object code = XposedHelpers.callMethod(resp, "code");
+
+            Object body = XposedHelpers.callMethod(resp, "peekBody", 1024L * 1024L);
+            String s = "";
+            if (body != null) {
+                s = String.valueOf(XposedHelpers.callMethod(body, "string"));
+            }
+            log("resp", code + " " + u + "\n    " + clip(s, 6000));
+
+            // 二进制响应单独存，可能是包体
+            if (isLikelyPackageUrl(u) && s != null) {
+                saveRaw(u, s);
+            }
+        } catch (Throwable t) {
+            log("crash", "dumpResponse " + t);
+        }
+    }
+
+    static void saveRaw(String url, String body) {
+        try {
+            File dir = new File(OUT, "raw");
+            if (!dir.exists()) dir.mkdirs();
+            String name = url.replaceAll("[^A-Za-z0-9._-]", "_");
+            if (name.length() > 120) name = name.substring(name.length() - 120);
+            File f = new File(dir, name);
+            FileOutputStream fos = new FileOutputStream(f, true);
+            fos.write(("\n### " + url + "\n").getBytes("UTF-8"));
+            fos.write(clip(body, 5 * 1024 * 1024).getBytes("UTF-8"));
+            fos.close();
+        } catch (Throwable ignored) {}
+    }
+
+    static boolean isLikelyPackageUrl(String u) {
+        String l = u.toLowerCase();
+        return l.contains(".zip") || l.contains(".pkg") || l.contains("mini")
+                || l.contains("mpkg") || l.contains("rnbundle")
+                || l.contains("bundle.js") || l.contains("app-service");
+    }
+
+    static void logNet(String s) {
+        log("net", s);
+    }
+
+    static String clip(String s, int n) {
+        if (s == null) return "";
+        return s.length() <= n ? s : s.substring(0, n) + " …(截断)";
+    }
+
+    // ------------------------------------------------------------ HttpURLConnection
+
+    static void hookHttpUrlConnection(ClassLoader cl) {
+        XposedHelpers.findAndHookMethod(java.net.URL.class, "openConnection",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam p) {
+                        try {
+                            logNet("URLCONN " + p.thisObject.toString());
+                        } catch (Throwable ignored) {}
+                    }
+                });
+    }
+
+    // ------------------------------------------------------------ WebView
+
+    static void hookWebView(ClassLoader cl) {
+        for (Method m : WebView.class.getDeclaredMethods()) {
+            if (m.getName().equals("loadUrl")) {
+                final Class<?>[] types = m.getParameterTypes();
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam p) {
+                        try {
+                            String u = String.valueOf(p.args[0]);
+                            log("webview", "loadUrl " + u);
+                            if (isLikelyPackageUrl(u)) saveRaw(u, "(loadUrl)");
+                        } catch (Throwable ignored) {}
+                    }
+                });
+            }
+            if (m.getName().equals("evaluateJavascript")) {
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam p) {
+                        try {
+                            log("webview", "evalJS " + clip(String.valueOf(p.args[0]), 2000));
+                        } catch (Throwable ignored) {}
+                    }
+                });
+            }
+        }
+
+        // 拦截 WebView 的资源请求（小程序包很多时候走这里）
+        try {
+            Class<?> wvc = XposedHelpers.findClass(
+                    "android.webkit.WebViewClient", cl);
+            for (Method m : wvc.getDeclaredMethods()) {
+                if (!m.getName().equals("shouldInterceptRequest")) continue;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam p) {
+                        try {
+                            Object wr = p.args[1];
+                            String u = (String) XposedHelpers.callMethod(wr, "getUrl");
+                            log("webview", "intercept " + u);
+                        } catch (Throwable ignored) {}
+                    }
+                });
+            }
+        } catch (Throwable ignored) {}
+
+        // 小程序常见的 JSBridge 调用
+        try {
+            Class<?> bridge = XposedHelpers.findClass(
+                    "android.webkit.JavascriptInterface", cl);
+            log("boot", "jsbridge annotation found: " + (bridge != null));
+        } catch (Throwable ignored) {}
+    }
+
+    // ------------------------------------------------------------ SSL unpinning
+
+    static void hookSslPinning(ClassLoader cl) {
+        // 注意：不能直接 hook javax.net.ssl.X509TrustManager 接口本身 ——
+        // ART 下接口方法没有实现体，hook 上去是空转。
+        // 正确姿势是等 SSLContext.init 时把真实的 TrustManager 实例抓出来，
+        // 逐个 hook 它们自己的 checkServerTrusted。
+
+        try {
+            XposedHelpers.findAndHookMethod(
+                    javax.net.ssl.SSLContext.class, "init",
+                    javax.net.ssl.KeyManager[].class,
+                    javax.net.ssl.TrustManager[].class,
+                    java.security.SecureRandom.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam p) {
+                            javax.net.ssl.TrustManager[] tms =
+                                    (javax.net.ssl.TrustManager[]) p.args[1];
+                            if (tms == null) return;
+                            for (javax.net.ssl.TrustManager tm : tms) {
+                                if (tm == null) continue;
+                                neutralize(tm.getClass());
+                            }
+                        }
+                    });
+            log("ssl", "SSLContext.init hooked");
+        } catch (Throwable t) {
+            log("crash", "ssl init " + t);
+        }
+
+        // Conscrypt 的实现类，很多 App 直接用它绕开默认 TrustManager
+        for (String cn : new String[]{
+                "com.android.org.conscrypt.TrustManagerImpl",
+                "org.conscrypt.TrustManagerImpl"}) {
+            try {
+                neutralize(XposedHelpers.findClass(cn, cl));
+                log("ssl", "conscrypt neutralized " + cn);
+            } catch (Throwable ignored) {}
+        }
+
+        // X509TrustManagerExtensions（OkHttp 走这条）
+        try {
+            XposedHelpers.findAndHookMethod(
+                    X509TrustManagerExtensions.class, "checkServerTrusted",
+                    X509Certificate[].class, String.class, String.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam p) {
+                            X509Certificate[] chain = (X509Certificate[]) p.args[0];
+                            p.setResult(chain == null
+                                    ? new java.util.ArrayList<X509Certificate>()
+                                    : new java.util.ArrayList<>(
+                                            java.util.Arrays.asList(chain)));
+                        }
+                    });
+        } catch (Throwable ignored) {}
+
+        // HostnameVerifier 一律放行
+        try {
+            XposedHelpers.findAndHookMethod(
+                    javax.net.ssl.HttpsURLConnection.class,
+                    "setHostnameVerifier", javax.net.ssl.HostnameVerifier.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam p) {
+                            p.args[0] = new javax.net.ssl.HostnameVerifier() {
+                                @Override
+                                public boolean verify(String h,
+                                                      javax.net.ssl.SSLSession s) {
+                                    return true;
+                                }
+                            };
+                        }
+                    });
+        } catch (Throwable ignored) {}
+    }
+
+    /** 把一个 TrustManager 实现类的所有 checkServerTrusted 变成空操作 */
+    static void neutralize(Class<?> c) {
+        if (c == null) return;
+        for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+            if (!m.getName().equals("checkServerTrusted")) continue;
+            try {
+                XposedBridge.hookMethod(m, BYPASS);
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    static final XC_MethodHook BYPASS = new XC_MethodHook() {
+        @Override
+        protected void beforeHookedMethod(MethodHookParam p) {
+            try {
+                Class<?> rt = ((java.lang.reflect.Method) p.method).getReturnType();
+                if (rt == void.class) {
+                    p.setResult(null);
+                } else if (java.util.List.class.isAssignableFrom(rt)) {
+                    // X509TrustManagerExtensions.checkServerTrusted 返回 List
+                    p.setResult(new java.util.ArrayList<Object>());
+                } else {
+                    p.setResult(null);
+                }
+                log("ssl", "bypass " + p.method.getName());
+            } catch (Throwable t) {
+                p.setResult(null);
+            }
+        }
+    };
+
+    static void hookCertificatePinner(ClassLoader cl) {
+        try {
+            Class<?> cp = XposedHelpers.findClass("okhttp3.CertificatePinner", cl);
+            for (Method m : cp.getDeclaredMethods()) {
+                if (m.getName().equals("check")) {
+                    XposedBridge.hookMethod(m, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam p) {
+                            p.setResult(null);
+                        }
+                    });
+                }
+            }
+            log("ssl", "CertificatePinner neutralized");
+        } catch (Throwable ignored) {}
+    }
+
+    // ------------------------------------------------------------ 文件写入监控
+
+    static void hookFileWrite(ClassLoader cl) {
+        XposedHelpers.findAndHookMethod(FileOutputStream.class, "<init>",
+                File.class, boolean.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam p) {
+                        try {
+                            File f = (File) p.args[0];
+                            if (f == null) return;
+                            String path = f.getAbsolutePath();
+                            if (isHotPath(path)) {
+                                log("file", "write " + path + " (" + f.length() + "B)");
+                                // 小程序包写完后会再读，这里只记录；真正导出靠 sweep
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                });
+
+        XposedHelpers.findAndHookMethod(FileOutputStream.class, "<init>",
+                String.class, boolean.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam p) {
+                        try {
+                            String path = (String) p.args[0];
+                            if (path != null && isHotPath(path)) {
+                                log("file", "write " + path);
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                });
+    }
+
+    static boolean isHotPath(String p) {
+        String l = p.toLowerCase(Locale.US);
+        if (!l.contains("/data/data/" + TARGET) && !l.contains("/data/user/0/" + TARGET))
+            return false;
+        for (String s : SKIP_EXT) if (l.endsWith(s)) return false;
+        return l.endsWith(".zip") || l.contains("mini") || l.contains("tool")
+                || l.contains(".pkg") || l.contains("bundle") || l.contains("resource");
+    }
+
+    // ------------------------------------------------------------ 目录扫描
+
+    static void sweep(String tag) {
+        if (sSwept || sApp == null) return;
+        sSwept = true;
+        try {
+            File base = sApp.getFilesDir().getParentFile();
+            if (base == null || !base.exists()) {
+                log("pkg", "私有目录不可见: " + base);
+                return;
+            }
+            if (!PKG_OUT.exists()) PKG_OUT.mkdirs();
+            StringBuilder manifest = new StringBuilder();
+            manifest.append("# XhsSpy 包体扫描 ").append(new Date()).append("\n");
+            manifest.append("# base=").append(base.getAbsolutePath()).append("\n\n");
+            int[] cnt = {0};
+            walk(base, base, new File(PKG_OUT, tag), manifest, cnt, 0);
+            File mf = new File(PKG_OUT, "manifest_" + tag + ".txt");
+            FileOutputStream fos = new FileOutputStream(mf);
+            fos.write(manifest.toString().getBytes("UTF-8"));
+            fos.close();
+            log("pkg", "sweep done, exported=" + cnt[0] + " -> " + mf);
+        } catch (Throwable t) {
+            log("crash", "sweep " + t);
+        } finally {
+            sSwept = false;
+        }
+    }
+
+    static void walk(File base, File dir, File outRoot, StringBuilder mf,
+                     int[] cnt, int depth) {
+        if (depth > 8 || dir == null || !dir.isDirectory()) return;
+        File[] kids = dir.listFiles();
+        if (kids == null) return;
+        for (File f : kids) {
+            try {
+                if (f.isDirectory()) {
+                    walk(base, f, outRoot, mf, cnt, depth + 1);
+                    continue;
+                }
+                long len = f.length();
+                if (len < MIN_PKG || len > MAX_PKG) continue;
+                String path = f.getAbsolutePath();
+                String rel = path.substring(base.getAbsolutePath().length());
+                String low = path.toLowerCase(Locale.US);
+
+                boolean skip = false;
+                for (String s : SKIP_EXT) if (low.endsWith(s)) skip = true;
+                if (skip) continue;
+
+                boolean hot = false;
+                for (String s : HOT_EXT) if (low.endsWith(s)) hot = true;
+                if (!hot && !looksLikeZip(f)) continue;
+
+                String inner = inspectZip(f);
+                boolean pkg = inner != null && !inner.isEmpty();
+
+                // 命中内部标志 → 高优先级
+                String level = pkg ? "PKG" : (hot ? "hot" : "raw");
+                mf.append(String.format(Locale.US, "[%s] %10d  %s%s\n",
+                        level, len, rel, pkg ? ("  -> " + inner) : ""));
+
+                // 只导出高优先级的，避免把整个 cache 搬空
+                if (!pkg && len < 64 * 1024) continue;
+                copyTo(f, new File(outRoot, rel.replace('/', '_')), mf, level);
+                cnt[0]++;
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    static boolean looksLikeZip(File f) {
+        try (FileInputStream in = new FileInputStream(f)) {
+            byte[] b = new byte[4];
+            if (in.read(b) != 4) return false;
+            return b[0] == 'P' && b[1] == 'K' && (b[2] == 3 || b[2] == 5 || b[2] == 7);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 打开 zip 看里面有没有小程序标志文件，返回命中项 */
+    static String inspectZip(File f) {
+        if (!looksLikeZip(f)) return "";
+        try (ZipFile z = new ZipFile(f)) {
+            Enumeration<? extends ZipEntry> en = z.entries();
+            StringBuilder hit = new StringBuilder();
+            int n = 0;
+            while (en.hasMoreElements() && n < 400) {
+                ZipEntry e = en.nextElement();
+                n++;
+                String name = e.getName().toLowerCase(Locale.US);
+                for (String mark : PKG_INNER_MARKS) {
+                    if (name.contains(mark)) {
+                        if (hit.length() > 0) hit.append(',');
+                        hit.append(e.getName());
+                        break;
+                    }
+                }
+                if (hit.length() > 200) break;
+            }
+            return hit.toString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    static void copyTo(File src, File dst, StringBuilder mf, String level) {
+        try {
+            File parent = dst.getParentFile();
+            if (parent != null && !parent.exists()) parent.mkdirs();
+            try (InputStream in = new FileInputStream(src);
+                 FileOutputStream out = new FileOutputStream(dst)) {
+                byte[] buf = new byte[65536];
+                int r;
+                long total = 0;
+                while ((r = in.read(buf)) > 0) {
+                    out.write(buf, 0, r);
+                    total += r;
+                    if (total > MAX_PKG) break;
+                }
+            }
+            mf.append("         -> exported ").append(dst.getAbsolutePath())
+                    .append("\n");
+        } catch (Throwable t) {
+            mf.append("         -> copy fail ").append(t).append("\n");
+        }
+    }
+}

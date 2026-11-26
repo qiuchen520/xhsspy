@@ -1,0 +1,18 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        google()
+        mavenCentral()
+        // Xposed API 的来源
+        maven { url 'https://api.xposed.info/' }
+    }
+}
+rootProject.name = "XhsSpy"
+include ':app'

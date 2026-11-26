@@ -1,0 +1,71 @@
+name: Build XhsSpy APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 兜底：如果仓库里只有一个源码 zip，先解开
+      - name: Unpack source if needed
+        run: |
+          if [ ! -f settings.gradle ] && [ ! -f settings.gradle.kts ]; then
+            Z=$(find . -maxdepth 2 -name "*.zip" | head -1)
+            if [ -n "$Z" ]; then
+              echo "解压 $Z"
+              mkdir -p _src && unzip -q "$Z" -d _src
+              ROOT=$(dirname "$(find _src -name settings.gradle | head -1)")
+              echo "源码根目录: $ROOT"
+              cp -a "$ROOT"/. .
+            fi
+          fi
+          ls -la
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build release APK
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          find . -path ./_src -prune -o -name "*.apk" -print -exec cp {} out/XhsSpy.apk \;
+          ls -la out
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XhsSpy-apk
+          path: out/*.apk
+          retention-days: 30
+
+      # 同时发一个 Release，手机浏览器点一下就能直接下 APK 安装
+      - name: Publish Release
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: XhsSpy build ${{ github.run_number }}
+          body: |
+            自动构建产物。
+            下载下面的 `XhsSpy.apk`，装到手机上，然后在 LSPatch 里选中它作为模块。
+          files: out/*.apk
+          draft: false
+          prerelease: false
