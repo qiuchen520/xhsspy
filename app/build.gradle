@@ -9,10 +9,16 @@ android {
     defaultConfig {
         applicationId "com.rxw.xhsspy"
         minSdk 21
-        // Xposed 模块 targetSdk 不要给太高，避免被系统按新分区存储规则限制
-        targetSdk 28
+        // 模块本体其实不参与运行时存储策略，给高一点避免新版系统拒装
+        targetSdk 33
         versionCode 1
         versionName "1.0"
+    }
+
+    // 模块不是上架应用，不需要 Play 那套 targetSdk 规则
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
     }
 
     compileOptions {
