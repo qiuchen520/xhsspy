@@ -190,6 +190,20 @@ public class MiniServer {
 
     private void route(String path, Map<String, String> q, OutputStream out, byte[] body)
             throws IOException {
+        // 壁纸站：/wall 是页面，/wall/api/* 是接口
+        if (path.startsWith("/wall/api/")) {
+            sendJson(out, 200, Wall.apiRoute(path.substring("/wall/api/".length()), q));
+            return;
+        }
+        if ("/wall".equals(path) || "/wall/".equals(path)) {
+            try {
+                Wall.page(out);
+            } catch (Exception e) {
+                sendHtml(out, 500, page("错误", "<p>" + esc(String.valueOf(e)) + "</p>"));
+            }
+            return;
+        }
+
         switch (path) {
             case "/":            home(out, q); break;
             case "/ls":          listDir(out, q); break;
@@ -218,7 +232,8 @@ public class MiniServer {
     private void home(OutputStream out, Map<String, String> q) throws IOException {
         StringBuilder b = new StringBuilder();
         b.append("<div class=grid>");
-        b.append(card("/pageimg?" + k(q), "★ 页面实时图片", "小工具里刷出来的图，自动收集"));
+        b.append(card("/wall?" + k(q), "★ 掘金壁纸", "壁纸站，能直接看图下原图"));
+        b.append(card("/pageimg?" + k(q), "页面实时图片", "小工具里刷出来的图，自动收集"));
         b.append(card("/img?" + k(q) + "&src=pkg", "包内图片", "小工具 zip 里的素材"));
         b.append(card("/img?" + k(q) + "&src=all", "全部图片", "含缓存，噪声多"));
         b.append(card("/pkg?" + k(q), "包清单", "sweep 扫出来的 zip"));
