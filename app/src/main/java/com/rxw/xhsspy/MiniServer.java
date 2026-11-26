@@ -195,6 +195,12 @@ public class MiniServer {
             case "/ls":          listDir(out, q); break;
             case "/get":         getFile(out, q); break;
             case "/img":         imageWall(out, q); break;
+            case "/pageimg":     pageImageWall(out, q); break;
+            case "/proxy":       proxyImage(out, q); break;
+            case "/clearimg":    XhsSpy.clearPageImages();
+                                 sendHtml(out, 200, page("已清空",
+                                         "<p>图片记录已清空。<a href=\"/pageimg\">回去</a></p>"));
+                                 break;
             case "/zipimg":      zipImage(out, q); break;
             case "/log":         showLog(out, q); break;
             case "/pkg":         showPkg(out, q); break;
@@ -212,7 +218,8 @@ public class MiniServer {
     private void home(OutputStream out, Map<String, String> q) throws IOException {
         StringBuilder b = new StringBuilder();
         b.append("<div class=grid>");
-        b.append(card("/img?" + k(q) + "&src=pkg", "包内图片", "小工具 zip 里的素材，最准"));
+        b.append(card("/pageimg?" + k(q), "★ 页面实时图片", "小工具里刷出来的图，自动收集"));
+        b.append(card("/img?" + k(q) + "&src=pkg", "包内图片", "小工具 zip 里的素材"));
         b.append(card("/img?" + k(q) + "&src=all", "全部图片", "含缓存，噪声多"));
         b.append(card("/pkg?" + k(q), "包清单", "sweep 扫出来的 zip"));
         b.append(card("/ls?p=" + enc(rootPath()) + (k(q).isEmpty() ? "" : "&" + k(q)), "私有目录", "浏览 /data/data"));
@@ -365,7 +372,92 @@ public class MiniServer {
         sendHtml(out, 200, page("图片墙", b.toString()));
     }
 
-    /** 直接从 zip 里吐图片，不解压 */
+    /** 页面实时图片墙：图片 URL 由 XhsSpy 后台轮询收集，这里用代理显示 */
+    private void pageImageWall(OutputStream out, Map<String, String> q) throws IOException {
+        List<String> urls = XhsSpy.getPageImages();
+        StringBuilder b = new StringBuilder();
+        b.append("<div class=row style=\"margin-bottom:12px\">")
+         .append("<a class=chip href=\"/pageimg?").append(k(q))
+         .append("\">刷新</a><a class=chip href=\"/clearimg?").append(k(q))
+         .append("\">清空</a><a class=chip href=\"/clearimg?").append(k(q))
+         .append("&back=1\">清空</a></div>");
+        b.append("<p class=hint>共 <b>").append(urls.size())
+         .append("</b> 张，每 5 秒自动刷新收集。点图看原图，长按保存。</p>");
+
+        if (urls.isEmpty()) {
+            b.append("<p>还没有抓到图片 URL。<br>"
+                    + "① 确认已打开小工具并且图片已经显示出来；<br>"
+                    + "② 等 5~10 秒再刷新；<br>"
+                    + "③ 还是空就看 <a href=\"/log?n=boot\">boot.log</a> 里有没有 "
+                    + "<code>new WebView registered</code>。</p>");
+        }
+
+        b.append("<div class=wall>");
+        java.util.Collections.reverse(urls);   // 新的在前
+        int max = Math.min(urls.size(), 400);
+        for (int i = 0; i < max; i++) {
+            String u = urls.get(i);
+            String href = "/proxy?" + k(q) + "&u=" + enc(u);
+            String shortName = u.length() > 60 ? u.substring(u.length() - 60) : u;
+            b.append("<a class=thumb href=\"").append(href).append("\" target=_blank>")
+             .append("<img loading=lazy src=\"").append(href).append("\" ")
+             .append("onerror=\"this.style.opacity=.25\">")
+             .append("<span title=\"").append(esc(u)).append("\">")
+             .append(esc(shortName)).append("</span></a>");
+        }
+        b.append("</div>");
+        b.append("<p class=hint>如果大量图显示成半透明，说明 CDN 拒绝了代理请求，"
+                + "把链接复制到浏览器直接打开可能更好。</p>");
+        sendHtml(out, 200, page("页面实时图片", b.toString()));
+    }
+
+    /** 代下载网络图片，带上小工具需要的 Referer */
+    private void proxyImage(OutputStream out, Map<String, String> q) throws IOException {
+        String u = q.get("u");
+        if (u == null || !(u.startsWith("http://") || u.startsWith("https://"))) {
+            sendHtml(out, 400, page("参数错误", "<p>需要一个 http(s) URL</p>"));
+            return;
+        }
+        java.net.HttpURLConnection c = null;
+        try {
+            c = (java.net.HttpURLConnection) new java.net.URL(u).openConnection();
+            c.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 "
+                    + "(KHTML, like Gecko) Version/4.0 Chrome/131.0.0.0 Mobile Safari/537.36");
+            c.setRequestProperty("Referer", "https://www.xiaohongshu.com/");
+            c.setRequestProperty("Accept", "image/avif,image/webp,image/*,*/*;q=0.8");
+            c.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9");
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(25000);
+            c.setInstanceFollowRedirects(true);
+
+            int code = c.getResponseCode();
+            if (code >= 400) {
+                sendBytes(out, code, "text/plain; charset=utf-8",
+                        ("上游返回 " + code).getBytes("UTF-8"));
+                return;
+            }
+            String ctype = c.getContentType();
+            if (ctype == null || !ctype.startsWith("image/")) ctype = "image/jpeg";
+
+            java.io.InputStream in = c.getInputStream();
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[65536];
+            int r, total = 0;
+            while ((r = in.read(buf)) > 0) {
+                bos.write(buf, 0, r);
+                total += r;
+                if (total > 8 * 1024 * 1024) break;
+            }
+            in.close();
+            sendBytes(out, 200, ctype, bos.toByteArray());
+        } catch (Exception ex) {
+            sendBytes(out, 502, "text/plain; charset=utf-8",
+                    ("下载失败: " + ex).getBytes("UTF-8"));
+        } finally {
+            if (c != null) try { c.disconnect(); } catch (Exception ignored) {}
+        }
+    }
     private void zipImage(OutputStream out, Map<String, String> q) throws IOException {
         File z = resolve(q.get("z"));
         String entry = q.get("e");

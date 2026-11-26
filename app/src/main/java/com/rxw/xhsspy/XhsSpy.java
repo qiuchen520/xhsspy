@@ -274,11 +274,71 @@ public class XhsSpy implements IXposedHookLoadPackage {
         return sb.toString();
     }
 
+    // ------------------------------------------------------------ 图片轮询（不依赖 MCP）
+
+    static final java.util.Set<String> sPageImgs =
+            java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<String>());
+    static volatile boolean sPolling = false;
+
+    public static java.util.List<String> getPageImages() {
+        synchronized (sPageImgs) {
+            return new java.util.ArrayList<>(sPageImgs);
+        }
+    }
+
+    static void clearPageImages() {
+        sPageImgs.clear();
+    }
+
+    /** 每 5 秒问一次页面有没有新图，有就攒起来。这样不打 MCP 也能在网页上看到。 */
+    static void startImagePoller() {
+        if (sPolling) return;
+        sPolling = true;
+        Thread t = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(5000);
+                    if (sWebViews.isEmpty()) continue;
+                    String json;
+                    try {
+                        json = collectPageImages();
+                    } catch (Throwable e) {
+                        continue;
+                    }
+                    if (json == null || json.contains("\"error\"")) continue;
+                    org.json.JSONObject o = new org.json.JSONObject(json);
+                    org.json.JSONArray pages = o.optJSONArray("pages");
+                    if (pages == null) continue;
+                    int added = 0;
+                    for (int i = 0; i < pages.length(); i++) {
+                        org.json.JSONObject pg = pages.optJSONObject(i);
+                        if (pg == null) continue;
+                        org.json.JSONArray imgs = pg.optJSONArray("images");
+                        if (imgs == null) continue;
+                        for (int j = 0; j < imgs.length(); j++) {
+                            String u = imgs.optString(j, "");
+                            if (u.isEmpty()) continue;
+                            if (sPageImgs.add(u)) {
+                                log("pageimg", u);
+                                added++;
+                            }
+                        }
+                    }
+                    if (added > 0) log("boot", "pageimg +" + added
+                            + "（累计 " + sPageImgs.size() + "）");
+                } catch (Throwable ignored) {}
+            }
+        }, "XhsSpyImgPoll");
+        t.setDaemon(true);
+        t.start();
+    }
+
     // ------------------------------------------------------------ 启动 HTTP + MCP 服务
 
     static void startServer() {
         if (sServer != null) return;
         try {
+            startImagePoller();
             File base = null;
             try { base = sApp.getFilesDir().getParentFile(); } catch (Throwable ignored) {}
             File ext = null;
@@ -457,6 +517,22 @@ public class XhsSpy implements IXposedHookLoadPackage {
     // ------------------------------------------------------------ WebView
 
     static void hookWebView(ClassLoader cl) {
+        // 先把所有 WebView 实例登记下来 —— 不管它是怎么被 load 的
+        try {
+            XposedBridge.hookAllConstructors(android.webkit.WebView.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam p) {
+                            try {
+                                registerWebView(p.thisObject);
+                                log("webview", "new WebView registered");
+                            } catch (Throwable ignored) {}
+                        }
+                    });
+        } catch (Throwable t) {
+            log("crash", "hook webview ctor " + t);
+        }
+
         for (Method m : WebView.class.getDeclaredMethods()) {
             if (m.getName().equals("loadUrl")) {
                 final Class<?>[] types = m.getParameterTypes();
