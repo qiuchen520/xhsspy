@@ -59,6 +59,11 @@ public class XhsSpy implements IXposedHookLoadPackage {
 
     static volatile Context sApp;
     static volatile boolean sSwept = false;
+    static volatile MiniServer sServer;
+
+    public static File outDir() {
+        return OUT;
+    }
 
     static final String[] SKIP_EXT = {
             ".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".mov", ".mp3",
@@ -151,6 +156,7 @@ public class XhsSpy implements IXposedHookLoadPackage {
                         initOut(sApp);
                         log("boot", "app attached: " + sApp.getPackageName());
                         log("boot", "OUT=" + OUT.getAbsolutePath());
+                        startServer();
                         new Thread(() -> {
                             try {
                                 // 等 App 初始化完、小程序缓存落盘
@@ -162,6 +168,43 @@ public class XhsSpy implements IXposedHookLoadPackage {
                         }, "XhsSpySweep").start();
                     }
                 });
+    }
+
+    // ------------------------------------------------------------ 本地 HTTP 服务
+
+    static void startServer() {
+        if (sServer != null) return;
+        try {
+            File base = null;
+            try { base = sApp.getFilesDir().getParentFile(); } catch (Throwable ignored) {}
+            File ext = null;
+            try { ext = sApp.getExternalFilesDir(null); } catch (Throwable ignored) {}
+
+            File[] roots = new File[]{
+                    base,                                        // /data/data/com.xingin.xhs
+                    new File("/data/data/" + TARGET),            // 同上的绝对路径写法
+                    new File("/sdcard/Android/data/" + TARGET),  // 应用专属外部目录
+                    ext,                                         // 同上（Context 版）
+                    OUT,                                         // 日志输出目录
+                    new File("/sdcard/XhsSpy"),                  // 老路径兜底
+            };
+
+            MiniServer s = new MiniServer(roots, "", XhsSpy::sweepNow);
+            if (s.start()) {
+                sServer = s;
+                log("boot", "HTTP 服务已启动: " + s.localUrl()
+                        + "  lan=" + s.lanBound + "  port=" + s.port);
+            } else {
+                log("crash", "HTTP 服务启动失败（端口全占用）");
+            }
+        } catch (Throwable t) {
+            log("crash", "startServer " + t);
+        }
+    }
+
+    static void sweepNow() {
+        sSwept = false;
+        sweep("manual");
     }
 
     // ------------------------------------------------------------ OkHttp
