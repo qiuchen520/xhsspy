@@ -66,7 +66,7 @@ public class Wall {
     }
 
     static String aesEnc(String plain, String iv) throws Exception {
-        javax.crypto.SecretKeySpec k = new javax.crypto.SecretKeySpec(
+        javax.crypto.spec.SecretKeySpec k = new javax.crypto.spec.SecretKeySpec(
                 KEY.getBytes("UTF-8"), "AES");
         javax.crypto.spec.IvParameterSpec s =
                 new javax.crypto.spec.IvParameterSpec(iv.getBytes("UTF-8"));
@@ -76,7 +76,7 @@ public class Wall {
     }
 
     static String aesDec(String b64, String iv) throws Exception {
-        javax.crypto.SecretKeySpec k = new javax.crypto.SecretKeySpec(
+        javax.crypto.spec.SecretKeySpec k = new javax.crypto.spec.SecretKeySpec(
                 KEY.getBytes("UTF-8"), "AES");
         javax.crypto.spec.IvParameterSpec s =
                 new javax.crypto.spec.IvParameterSpec(iv.getBytes("UTF-8"));
