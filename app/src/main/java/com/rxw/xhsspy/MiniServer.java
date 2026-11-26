@@ -133,10 +133,25 @@ public class MiniServer {
                 sock.close();
                 return;
             }
+            int contentLength = 0;
             String h;
             int guard = 0;
             while ((h = readLine(in)) != null && !h.isEmpty() && guard++ < 200) {
-                // 丢弃请求头
+                int c = h.indexOf(':');
+                if (c > 0 && h.substring(0, c).trim().equalsIgnoreCase("Content-Length")) {
+                    try { contentLength = Integer.parseInt(h.substring(c + 1).trim()); }
+                    catch (Exception ignored) {}
+                }
+            }
+            byte[] body = new byte[0];
+            if (contentLength > 0 && contentLength <= 8 * 1024 * 1024) {
+                body = new byte[contentLength];
+                int read = 0;
+                while (read < contentLength) {
+                    int r = in.read(body, read, contentLength - read);
+                    if (r <= 0) break;
+                    read += r;
+                }
             }
 
             String[] p = requestLine.split(" ");
@@ -160,12 +175,12 @@ public class MiniServer {
             }
 
             if (!"GET".equals(method) && !"POST".equals(method)) {
-                sendHtml(out, 405, page("不支持", "<p>只支持 GET。</p>"));
+                sendHtml(out, 405, page("不支持", "<p>只支持 GET / POST。</p>"));
                 sock.close();
                 return;
             }
 
-            route(path, params, out);
+            route(path, params, out, body);
             out.flush();
             sock.close();
         } catch (Exception ignored) {
@@ -173,7 +188,7 @@ public class MiniServer {
         }
     }
 
-    private void route(String path, Map<String, String> q, OutputStream out)
+    private void route(String path, Map<String, String> q, OutputStream out, byte[] body)
             throws IOException {
         switch (path) {
             case "/":            home(out, q); break;
@@ -185,6 +200,7 @@ public class MiniServer {
             case "/sweep":       doSweep(out, q); break;
             case "/json":        jsonDir(out, q); break;
             case "/api/status":  jsonStatus(out, q); break;
+            case "/mcp":         handleMcp(out, body); break;
             case "/favicon.ico": sendBytes(out, 204, "text/plain", new byte[0]); break;
             default:             sendHtml(out, 404, page("404", "<p>" + esc(path) + "</p>"));
         }
@@ -407,7 +423,460 @@ public class MiniServer {
                 b.toString().getBytes("UTF-8"));
     }
 
-    // ------------------------------------------------------------ 文件工具
+    // ------------------------------------------------------------ MCP（Model Context Protocol）
+
+    /**
+     * MCP over HTTP，JSON-RPC 2.0。
+     * 手机上的 MCP 客户端（比如 RikkaHub）连 http://127.0.0.1:8686/mcp 就能用，
+     * 工具调用由客户端执行，结果回传给模型 —— 模型侧不需要能直连这台手机。
+     */
+    private void handleMcp(OutputStream out, byte[] body) throws IOException {
+        Object id = null;
+        try {
+            String s = new String(body, "UTF-8").trim();
+            if (s.isEmpty()) {
+                sendJson(out, 400, rpcErr(null, -32700, "空请求体"));
+                return;
+            }
+            org.json.JSONObject req = new org.json.JSONObject(s);
+            if (req.has("id")) id = req.get("id");
+            String method = req.optString("method", "");
+            org.json.JSONObject params = req.optJSONObject("params");
+            if (params == null) params = new org.json.JSONObject();
+
+            if ("initialize".equals(method)) {
+                org.json.JSONObject res = new org.json.JSONObject();
+                res.put("protocolVersion", "2024-11-05");
+                org.json.JSONObject caps = new org.json.JSONObject();
+                caps.put("tools", new org.json.JSONObject());
+                res.put("capabilities", caps);
+                org.json.JSONObject info = new org.json.JSONObject();
+                info.put("name", "xhsspy");
+                info.put("version", "1.1.0");
+                res.put("serverInfo", info);
+                sendRpc(out, id, res);
+
+            } else if (method.startsWith("notifications/")) {
+                sendBytes(out, 202, "application/json", new byte[0]);
+
+            } else if ("ping".equals(method)) {
+                sendRpc(out, id, new org.json.JSONObject());
+
+            } else if ("tools/list".equals(method)) {
+                org.json.JSONObject res = new org.json.JSONObject();
+                res.put("tools", toolDefs());
+                sendRpc(out, id, res);
+
+            } else if ("tools/call".equals(method)) {
+                String name = params.optString("name", "");
+                org.json.JSONObject args = params.optJSONObject("arguments");
+                if (args == null) args = new org.json.JSONObject();
+                sendRpc(out, id, callTool(name, args));
+
+            } else if ("resources/list".equals(method) || "prompts/list".equals(method)) {
+                org.json.JSONObject res = new org.json.JSONObject();
+                res.put("resources", new org.json.JSONArray());
+                res.put("prompts", new org.json.JSONArray());
+                sendRpc(out, id, res);
+
+            } else {
+                sendJson(out, 200, rpcErr(id, -32601, "未知方法: " + method));
+            }
+        } catch (Exception e) {
+            try { sendJson(out, 200, rpcErr(id, -32603, "内部错误: " + e)); }
+            catch (Exception ignored) {}
+        }
+    }
+
+    private void sendRpc(OutputStream out, Object id, org.json.JSONObject result)
+            throws IOException {
+        org.json.JSONObject o = new org.json.JSONObject();
+        o.put("jsonrpc", "2.0");
+        if (id != null) o.put("id", id);
+        o.put("result", result);
+        sendJson(out, 200, o.toString());
+    }
+
+    private void sendJson(OutputStream out, int code, String json) throws IOException {
+        sendBytes(out, code, "application/json; charset=utf-8",
+                json.getBytes("UTF-8"));
+    }
+
+    private static String rpcErr(Object id, int code, String msg) {
+        try {
+            org.json.JSONObject o = new org.json.JSONObject();
+            o.put("jsonrpc", "2.0");
+            if (id != null) o.put("id", id);
+            org.json.JSONObject e = new org.json.JSONObject();
+            e.put("code", code);
+            e.put("message", msg);
+            o.put("error", e);
+            return o.toString();
+        } catch (Exception ex) {
+            return "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"encoder\"}}";
+        }
+    }
+
+    // --- 工具定义 ---
+
+    private org.json.JSONArray toolDefs() throws Exception {
+        org.json.JSONArray arr = new org.json.JSONArray();
+        arr.put(tool("ls", "列出目录内容。返回文件名、大小、类型、修改时间。",
+                prop("path", "string", "绝对路径，例如 /data/data/com.xingin.xhs/files"),
+                "path"));
+        arr.put(tool("tree", "递归列出目录树，用于快速看清包结构。",
+                prop("path", "string", "绝对路径"),
+                prop("depth", "integer", "递归深度，默认 3，最大 8"),
+                "path"));
+        arr.put(tool("search", "按文件名关键字或扩展名搜索文件。",
+                prop("path", "string", "起始目录，默认第一个根目录"),
+                prop("name", "string", "文件名包含的关键字（不区分大小写）"),
+                prop("ext", "string", "扩展名过滤，例如 .js / .json / .png"),
+                prop("limit", "integer", "最多返回条数，默认 200")));
+        arr.put(tool("read_file", "读取文本文件内容（建议只读小文件）。",
+                prop("path", "string", "绝对路径"),
+                prop("maxBytes", "integer", "最大读取字节，默认 200000"),
+                "path"));
+        arr.put(tool("read_image", "读取一张图片并以图片内容返回，可直接查看。",
+                prop("path", "string", "图片绝对路径"),
+                "path"));
+        arr.put(tool("list_images", "列出所有图片（jpg/png/webp/gif 等），按修改时间倒序。",
+                prop("path", "string", "起始目录，留空则扫全部根目录"),
+                prop("limit", "integer", "最多返回条数，默认 100")));
+        arr.put(tool("stat", "查看单个文件或目录的详细信息。",
+                prop("path", "string", "绝对路径"),
+                "path"));
+        arr.put(tool("tail_log", "读取模块日志尾部。name 可选 boot/net/resp/webview/file/ssl/pkg/crash。",
+                prop("name", "string", "日志名，默认 boot"),
+                prop("kb", "integer", "读取多少 KB，默认 100")));
+        arr.put(tool("sweep", "触发一次私有目录扫描，重新导出小程序包。"));
+        arr.put(tool("packages", "查看已导出的小程序包清单。"));
+        arr.put(tool("roots", "列出本服务允许访问的根目录。"));
+        return arr;
+    }
+
+    private static org.json.JSONObject tool(String name, String desc, Object... rest)
+            throws Exception {
+        org.json.JSONObject t = new org.json.JSONObject();
+        t.put("name", name);
+        t.put("description", desc);
+        org.json.JSONObject schema = new org.json.JSONObject();
+        schema.put("type", "object");
+        org.json.JSONObject props = new org.json.JSONObject();
+        org.json.JSONArray required = new org.json.JSONArray();
+        for (Object o : rest) {
+            if (o instanceof String) {
+                required.put((String) o);
+            } else if (o instanceof org.json.JSONObject) {
+                org.json.JSONObject p = (org.json.JSONObject) o;
+                props.put(p.getString("__name"), p.getJSONObject("__schema"));
+            }
+        }
+        schema.put("properties", props);
+        if (required.length() > 0) schema.put("required", required);
+        t.put("inputSchema", schema);
+        return t;
+    }
+
+    private static org.json.JSONObject prop(String name, String type, String desc)
+            throws Exception {
+        org.json.JSONObject inner = new org.json.JSONObject();
+        inner.put("type", type);
+        inner.put("description", desc);
+        org.json.JSONObject wrap = new org.json.JSONObject();
+        wrap.put("__name", name);
+        wrap.put("__schema", inner);
+        return wrap;
+    }
+
+    // --- 工具执行 ---
+
+    private org.json.JSONObject callTool(String name, org.json.JSONObject a) throws Exception {
+        try {
+            switch (name) {
+                case "ls":         return text(toolLs(a.optString("path", rootPath())));
+                case "tree":       return text(toolTree(a.optString("path", rootPath()),
+                                            Math.min(a.optInt("depth", 3), 8)));
+                case "search":     return text(toolSearch(a.optString("path", rootPath()),
+                                            a.optString("name", ""), a.optString("ext", ""),
+                                            Math.min(a.optInt("limit", 200), 2000)));
+                case "read_file":  return text(toolReadFile(a.optString("path", ""),
+                                            Math.min(a.optInt("maxBytes", 200000), 4 * 1024 * 1024)));
+                case "read_image": return toolReadImage(a.optString("path", ""));
+                case "list_images":return text(toolListImages(a.optString("path", ""),
+                                            Math.min(a.optInt("limit", 100), 800)));
+                case "stat":       return text(toolStat(a.optString("path", "")));
+                case "tail_log":   return text(toolTailLog(a.optString("name", "boot"),
+                                            Math.min(a.optInt("kb", 100), 2048)));
+                case "sweep":      if (onSweep != null) onSweep.run();
+                                   return text("已触发扫描，稍后调用 packages 查看结果。");
+                case "packages":   return text(toolPackages());
+                case "roots":      return text(toolRoots());
+                default:           return errResult("未知工具: " + name);
+            }
+        } catch (Exception e) {
+            return errResult("执行失败: " + e);
+        }
+    }
+
+    private org.json.JSONObject text(String s) throws Exception {
+        org.json.JSONArray arr = new org.json.JSONArray();
+        org.json.JSONObject c = new org.json.JSONObject();
+        c.put("type", "text");
+        c.put("text", s);
+        arr.put(c);
+        org.json.JSONObject r = new org.json.JSONObject();
+        r.put("content", arr);
+        r.put("isError", false);
+        return r;
+    }
+
+    private org.json.JSONObject errResult(String msg) throws Exception {
+        org.json.JSONArray arr = new org.json.JSONArray();
+        org.json.JSONObject c = new org.json.JSONObject();
+        c.put("type", "text");
+        c.put("text", msg);
+        arr.put(c);
+        org.json.JSONObject r = new org.json.JSONObject();
+        r.put("content", arr);
+        r.put("isError", true);
+        return r;
+    }
+
+    private String toolRoots() {
+        StringBuilder b = new StringBuilder("允许访问的根目录：\n");
+        for (File r : roots) {
+            if (r == null) continue;
+            b.append("  ").append(r.getAbsolutePath())
+             .append("  ").append(r.isDirectory() ? "目录可读" : "不存在").append('\n');
+        }
+        b.append("\nHTTP: http://127.0.0.1:").append(port)
+         .append("/  |  MCP: http://127.0.0.1:").append(port).append("/mcp\n");
+        return b.toString();
+    }
+
+    private String toolLs(String path) {
+        File d = resolve(path);
+        if (d == null) return "路径不在允许范围内: " + path;
+        if (!d.exists()) return "不存在: " + path;
+        if (d.isFile()) return toolStat(path);
+
+        File[] kids = d.listFiles();
+        if (kids == null) return "无法列出（权限不足）: " + path;
+        Arrays.sort(kids, (x, y) -> {
+            if (x.isDirectory() != y.isDirectory()) return x.isDirectory() ? -1 : 1;
+            return x.getName().compareToIgnoreCase(y.getName());
+        });
+        StringBuilder b = new StringBuilder();
+        b.append(d.getAbsolutePath()).append("  (").append(kids.length).append(" 项)\n\n");
+        for (File f : kids) {
+            b.append(f.isDirectory() ? "d " : "f ");
+            b.append(String.format(Locale.US, "%10s  ", f.isDirectory() ? "-" : human(f.length())));
+            b.append(String.format(Locale.US, "%10d  ", f.length()));
+            b.append(fmt(f.lastModified())).append("  ");
+            b.append(f.getName()).append(f.isDirectory() ? "/" : "").append('\n');
+        }
+        return b.toString();
+    }
+
+    private String toolTree(String path, int depth) {
+        File d = resolve(path);
+        if (d == null || !d.isDirectory()) return "不是目录: " + path;
+        StringBuilder b = new StringBuilder();
+        b.append(d.getAbsolutePath()).append('\n');
+        treeRec(d, b, "", depth, 0);
+        return b.toString();
+    }
+
+    private void treeRec(File dir, StringBuilder b, String prefix, int maxDepth, int d) {
+        if (d >= maxDepth) return;
+        File[] kids = dir.listFiles();
+        if (kids == null) return;
+        Arrays.sort(kids, (x, y) -> x.getName().compareToIgnoreCase(y.getName()));
+        int shown = 0;
+        for (int i = 0; i < kids.length; i++) {
+            if (shown >= 80) { b.append(prefix).append("... (省略)\n"); return; }
+            File f = kids[i];
+            shown++;
+            b.append(prefix).append(f.isDirectory() ? "├─ " : "│  ").append(f.getName());
+            if (!f.isDirectory()) b.append("  (").append(human(f.length())).append(')');
+            b.append('\n');
+            if (f.isDirectory()) {
+                treeRec(f, b, prefix + "│  ", maxDepth, d + 1);
+            }
+        }
+    }
+
+    private String toolSearch(String path, String name, String ext, int limit) {
+        File start = path == null || path.isEmpty() ? null : resolve(path);
+        if (start == null || !start.exists()) start = roots.length > 0 ? roots[0] : null;
+        if (start == null) return "没有可搜索的目录";
+        List<String> hits = new ArrayList<>();
+        String nl = name == null ? "" : name.toLowerCase(Locale.US);
+        String el = ext == null ? "" : ext.toLowerCase(Locale.US);
+        if (!el.isEmpty() && !el.startsWith(".")) el = "." + el;
+        searchRec(start, nl, el, hits, limit, 0, new int[]{0});
+        StringBuilder b = new StringBuilder();
+        b.append("命中 ").append(hits.size()).append(" 项");
+        if (hits.size() >= limit) b.append("（已达上限）");
+        b.append("\n\n");
+        for (String s : hits) b.append(s).append('\n');
+        return b.toString();
+    }
+
+    private void searchRec(File dir, String name, String ext, List<String> hits,
+                           int limit, int depth, int[] visited) {
+        if (depth > 10 || hits.size() >= limit || visited[0] > 40000) return;
+        File[] kids = dir.listFiles();
+        if (kids == null) return;
+        for (File f : kids) {
+            if (hits.size() >= limit || visited[0] > 40000) return;
+            visited[0]++;
+            String n = f.getName().toLowerCase(Locale.US);
+            if (f.isDirectory()) {
+                if (!n.startsWith(".")) searchRec(f, name, ext, hits, limit, depth + 1, visited);
+                continue;
+            }
+            if (!name.isEmpty() && !n.contains(name)) continue;
+            if (!ext.isEmpty() && !n.endsWith(ext)) continue;
+            hits.add(human(f.length()) + "\t" + f.getAbsolutePath());
+        }
+    }
+
+    private String toolReadFile(String path, int maxBytes) {
+        File f = resolve(path);
+        if (f == null) return "路径不在允许范围内: " + path;
+        if (!f.isFile()) return "不是文件: " + path;
+        try {
+            long len = f.length();
+            int n = (int) Math.min(len, maxBytes);
+            byte[] buf = new byte[n];
+            java.io.FileInputStream in = new java.io.FileInputStream(f);
+            int read = 0;
+            while (read < n) {
+                int r = in.read(buf, read, n - read);
+                if (r <= 0) break;
+                read += r;
+            }
+            in.close();
+            String head = "文件: " + f.getAbsolutePath() + "\n大小: " + human(len)
+                    + (len > n ? "（只读了前 " + human(n) + "）" : "") + "\n\n";
+            return head + new String(buf, 0, read, "UTF-8");
+        } catch (Exception e) {
+            return "读取失败: " + e;
+        }
+    }
+
+    private org.json.JSONObject toolReadImage(String path) throws Exception {
+        File f = resolve(path);
+        if (f == null || !f.isFile()) return errResult("不是可读文件: " + path);
+        if (f.length() > 4 * 1024 * 1024) {
+            return errResult("图片太大（" + human(f.length()) + "），超过 4 MB，"
+                    + "请用 HTTP 下载: http://127.0.0.1:" + port + "/get?p=" + enc(f.getAbsolutePath()));
+        }
+        byte[] data = new byte[(int) f.length()];
+        java.io.FileInputStream in = new java.io.FileInputStream(f);
+        int read = 0;
+        while (read < data.length) {
+            int r = in.read(data, read, data.length - read);
+            if (r <= 0) break;
+            read += r;
+        }
+        in.close();
+
+        String n = f.getName().toLowerCase(Locale.US);
+        String mime = "image/jpeg";
+        if (n.endsWith(".png")) mime = "image/png";
+        else if (n.endsWith(".webp")) mime = "image/webp";
+        else if (n.endsWith(".gif")) mime = "image/gif";
+        else if (n.endsWith(".bmp")) mime = "image/bmp";
+        else if (n.endsWith(".avif")) mime = "image/avif";
+
+        org.json.JSONArray arr = new org.json.JSONArray();
+        org.json.JSONObject c = new org.json.JSONObject();
+        c.put("type", "image");
+        c.put("data", android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP));
+        c.put("mimeType", mime);
+        arr.put(c);
+
+        org.json.JSONObject t = new org.json.JSONObject();
+        t.put("type", "text");
+        t.put("text", f.getName() + "  " + human(f.length()) + "  " + mime);
+        arr.put(t);
+
+        org.json.JSONObject r = new org.json.JSONObject();
+        r.put("content", arr);
+        r.put("isError", false);
+        return r;
+    }
+
+    private String toolListImages(String path, int limit) {
+        List<File> imgs = new ArrayList<>();
+        if (path != null && !path.isEmpty()) {
+            File d = resolve(path);
+            if (d != null) collectImages(d.isDirectory() ? d : d.getParentFile(), imgs, 0, limit);
+        } else {
+            for (File r : roots) if (r != null) collectImages(r, imgs, 0, limit);
+        }
+        Collections.sort(imgs, (x, y) -> Long.compare(y.lastModified(), x.lastModified()));
+        StringBuilder b = new StringBuilder();
+        b.append("图片 ").append(imgs.size()).append(" 张（新的在前）\n\n");
+        for (File f : imgs) {
+            b.append(human(f.length())).append('\t')
+             .append(fmt(f.lastModified())).append('\t')
+             .append(f.getAbsolutePath()).append('\n');
+        }
+        b.append("\n用 read_image 传路径即可查看。");
+        return b.toString();
+    }
+
+    private String toolStat(String path) {
+        File f = resolve(path);
+        if (f == null) return "路径不在允许范围内: " + path;
+        if (!f.exists()) return "不存在: " + path;
+        StringBuilder b = new StringBuilder();
+        b.append("路径: ").append(f.getAbsolutePath()).append('\n');
+        b.append("类型: ").append(f.isDirectory() ? "目录" : "文件").append('\n');
+        b.append("大小: ").append(human(f.length())).append(" (").append(f.length()).append(" B)\n");
+        b.append("修改: ").append(fmt(f.lastModified())).append('\n');
+        b.append("可读: ").append(f.canRead()).append("  可写: ").append(f.canWrite()).append('\n');
+        if (f.isDirectory()) {
+            String[] k = f.list();
+            b.append("子项: ").append(k == null ? "?" : k.length).append('\n');
+        }
+        return b.toString();
+    }
+
+    private String toolTailLog(String name, int kb) {
+        if (name == null || !name.matches("[a-zA-Z]+")) name = "boot";
+        File f = new File(XhsSpy.outDir(), name + ".log");
+        if (!f.exists()) return "还没有 " + name + ".log";
+        return "== " + name + ".log (" + human(f.length()) + ") ==\n\n"
+                + readTail(f, kb * 1024);
+    }
+
+    private String toolPackages() {
+        File dir = new File(XhsSpy.outDir(), "pkg");
+        if (!dir.exists()) return "还没有扫描结果，先调用 sweep。";
+        StringBuilder b = new StringBuilder();
+        File[] mfs = dir.listFiles((d, nm) -> nm.startsWith("manifest_"));
+        if (mfs != null && mfs.length > 0) {
+            Arrays.sort(mfs);
+            for (File mf : mfs) {
+                b.append("== ").append(mf.getName()).append(" ==\n");
+                b.append(readTail(mf, 512 * 1024)).append("\n\n");
+            }
+        }
+        File[] zips = dir.listFiles((d, nm) -> !nm.startsWith("manifest_"));
+        if (zips != null && zips.length > 0) {
+            b.append("== 已导出文件 ==\n");
+            for (File z : zips) {
+                b.append(human(z.length())).append('\t').append(z.getAbsolutePath()).append('\n');
+            }
+        }
+        if (b.length() == 0) return "pkg 目录还是空的。";
+        return b.toString();
+    }
 
     /** 把用户给的路径解析成真实的 File，越界返回 null */
     private File resolve(String raw) {
