@@ -195,6 +195,7 @@ public class MiniServer {
             case "/ls":          listDir(out, q); break;
             case "/get":         getFile(out, q); break;
             case "/img":         imageWall(out, q); break;
+            case "/zipimg":      zipImage(out, q); break;
             case "/log":         showLog(out, q); break;
             case "/pkg":         showPkg(out, q); break;
             case "/sweep":       doSweep(out, q); break;
@@ -211,12 +212,13 @@ public class MiniServer {
     private void home(OutputStream out, Map<String, String> q) throws IOException {
         StringBuilder b = new StringBuilder();
         b.append("<div class=grid>");
-        b.append(card("/pkg", "包清单", "扫到的小程序 zip"));
-        b.append(card("/img", "图片墙", "所有图片，可预览可下载"));
-        b.append(card("/ls?p=" + enc(rootPath()), "私有目录", "浏览 /data/data"));
+        b.append(card("/img?" + k(q) + "&src=pkg", "包内图片", "小工具 zip 里的素材，最准"));
+        b.append(card("/img?" + k(q) + "&src=all", "全部图片", "含缓存，噪声多"));
+        b.append(card("/pkg?" + k(q), "包清单", "sweep 扫出来的 zip"));
+        b.append(card("/ls?p=" + enc(rootPath()) + (k(q).isEmpty() ? "" : "&" + k(q)), "私有目录", "浏览 /data/data"));
         b.append(card("/log?n=net", "网络日志", "所有请求 URL"));
         b.append(card("/log?n=file", "写文件日志", "看包落在哪"));
-        b.append(card("/sweep", "重新扫描", "再翻一遍目录"));
+        b.append(card("/sweep?" + k(q), "重新扫描", "再翻一遍目录"));
         b.append("</div>");
 
         b.append("<h2>根目录</h2><ul class=list>");
@@ -292,16 +294,66 @@ public class MiniServer {
     }
 
     private void imageWall(OutputStream out, Map<String, String> q) throws IOException {
-        List<File> imgs = new ArrayList<>();
-        for (File r : roots) {
-            if (r != null) collectImages(r, imgs, 0, 600);
-        }
+        String src = q.get("src");
+        if (src == null || src.isEmpty()) src = "pkg";
+
         StringBuilder b = new StringBuilder();
-        b.append("<p class=hint>共 ").append(imgs.size())
-         .append(" 张。点图看原图，长按 / 右键可保存。</p>");
+        b.append("<div class=row style=\"margin-bottom:12px\">");
+        for (String s : new String[]{"pkg", "mini", "all"}) {
+            b.append("<a class=chip href=\"/img?").append(k(q)).append("&src=").append(s)
+             .append("\"").append(s.equals(src) ? " style=\"background:#ff2442;color:#fff\"" : "")
+             .append(">").append(s.equals("pkg") ? "包内图片" : s.equals("mini") ? "小工具目录" : "全部")
+             .append("</a>");
+        }
+        b.append("</div>");
+
+        if ("pkg".equals(src)) {
+            List<File> zips = new ArrayList<>();
+            for (File r : roots) if (r != null) findZips(r, zips, 0, 60, 4096);
+            Collections.sort(zips, (x, y) -> Long.compare(y.length(), x.length()));
+            b.append("<p class=hint>共 ").append(zips.size()).append(" 个包。点图看原图。</p>");
+            int shown = 0;
+            for (File z : zips) {
+                if (shown > 900) break;
+                List<String> names = new ArrayList<>();
+                try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(z)) {
+                    java.util.Enumeration<? extends java.util.zip.ZipEntry> en = zf.entries();
+                    while (en.hasMoreElements()) {
+                        java.util.zip.ZipEntry e = en.nextElement();
+                        if (!e.isDirectory() && isImageName(e.getName())) names.add(e.getName());
+                    }
+                } catch (Exception ignored) { continue; }
+                if (names.isEmpty()) continue;
+                b.append("<h2>").append(esc(z.getName()))
+                 .append(" <span class=dim>").append(human(z.length())).append("</span></h2>");
+                b.append("<p class=dim style=\"word-break:break-all\">")
+                 .append(esc(z.getAbsolutePath())).append("</p>");
+                b.append("<div class=wall>");
+                for (String n : names) {
+                    if (shown++ > 900) break;
+                    String href = "/zipimg?" + k(q) + "&z=" + enc(z.getAbsolutePath())
+                            + "&e=" + enc(n);
+                    b.append("<a class=thumb href=\"").append(href).append("\" target=_blank>")
+                     .append("<img loading=lazy src=\"").append(href).append("\">")
+                     .append("<span>").append(esc(n)).append("</span></a>");
+                }
+                b.append("</div>");
+            }
+            if (shown == 0) {
+                b.append("<p>没在 zip 里找到图片。试试 <a href=\"/img?")
+                 .append(k(q)).append("&src=all\">全部</a>，"
+                 + "或者用 MCP 的 find_packages 看看有没有包。</p>");
+            }
+            sendHtml(out, 200, page("包内图片", b.toString()));
+            return;
+        }
+
+        List<File> imgs = new ArrayList<>();
+        for (File r : roots) if (r != null)
+            collectImages(r, imgs, 0, 800, "mini".equals(src));
+        Collections.sort(imgs, (x, y) -> Long.compare(y.lastModified(), x.lastModified()));
+        b.append("<p class=hint>共 ").append(imgs.size()).append(" 张。点图看原图。</p>");
         b.append("<div class=wall>");
-        // 新文件排前面
-        Collections.sort(imgs, (a, c) -> Long.compare(c.lastModified(), a.lastModified()));
         for (File f : imgs) {
             String href = "/get?" + k(q) + "&p=" + enc(f.getAbsolutePath());
             b.append("<a class=thumb href=\"").append(href).append("\" target=_blank>")
@@ -311,6 +363,36 @@ public class MiniServer {
         }
         b.append("</div>");
         sendHtml(out, 200, page("图片墙", b.toString()));
+    }
+
+    /** 直接从 zip 里吐图片，不解压 */
+    private void zipImage(OutputStream out, Map<String, String> q) throws IOException {
+        File z = resolve(q.get("z"));
+        String entry = q.get("e");
+        if (z == null || entry == null) { sendHtml(out, 404, page("404", "<p>参数错误</p>")); return; }
+        try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(z)) {
+            java.util.zip.ZipEntry e = zf.getEntry(entry);
+            if (e == null) { sendHtml(out, 404, page("404", "<p>条目不存在</p>")); return; }
+            byte[] data;
+            try (java.io.InputStream in = zf.getInputStream(e)) {
+                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[65536];
+                int r;
+                while ((r = in.read(buf)) > 0) bos.write(buf, 0, r);
+                data = bos.toByteArray();
+            }
+            String n = entry.toLowerCase(Locale.US);
+            String mime = "image/jpeg";
+            if (n.endsWith(".png")) mime = "image/png";
+            else if (n.endsWith(".webp")) mime = "image/webp";
+            else if (n.endsWith(".gif")) mime = "image/gif";
+            else if (n.endsWith(".bmp")) mime = "image/bmp";
+            else if (n.endsWith(".avif")) mime = "image/avif";
+            else if (n.endsWith(".svg")) mime = "image/svg+xml";
+            sendBytes(out, 200, mime, data);
+        } catch (Exception ex) {
+            sendHtml(out, 500, page("错误", "<p>" + esc(String.valueOf(ex)) + "</p>"));
+        }
     }
 
     private void showLog(OutputStream out, Map<String, String> q) throws IOException {
@@ -540,9 +622,23 @@ public class MiniServer {
         arr.put(tool("read_image", "读取一张图片并以图片内容返回，可直接查看。",
                 prop("path", "string", "图片绝对路径"),
                 "path"));
-        arr.put(tool("list_images", "列出所有图片（jpg/png/webp/gif 等），按修改时间倒序。",
+        arr.put(tool("list_images", "列出图片。source=all 扫全部（噪声多），"
+                        + "source=mini 只看小工具目录，source=pkg 只看 zip 包内的图片（最准）。",
                 prop("path", "string", "起始目录，留空则扫全部根目录"),
+                prop("source", "string", "all / mini / pkg，默认 pkg"),
                 prop("limit", "integer", "最多返回条数，默认 100")));
+        arr.put(tool("find_packages", "扫描所有目录找 zip/包文件，不依赖 sweep，返回完整路径。",
+                prop("path", "string", "起始目录，留空扫全部根目录"),
+                prop("minKB", "integer", "最小体积 KB，默认 4"),
+                prop("limit", "integer", "最多返回条数，默认 200")));
+        arr.put(tool("zip_list", "列出某个 zip 包内的所有条目（不解压，直接读）。",
+                prop("path", "string", "zip 文件绝对路径"),
+                prop("filter", "string", "只列文件名包含该关键字的条目"),
+                "path"));
+        arr.put(tool("zip_image", "直接从 zip 包里读一张图片并返回图片内容（不解压）。",
+                prop("path", "string", "zip 文件绝对路径"),
+                prop("entry", "string", "包内条目路径，例如 assets/cover.png"),
+                "path", "entry"));
         arr.put(tool("stat", "查看单个文件或目录的详细信息。",
                 prop("path", "string", "绝对路径"),
                 "path"));
@@ -551,7 +647,15 @@ public class MiniServer {
                 prop("kb", "integer", "读取多少 KB，默认 100")));
         arr.put(tool("sweep", "触发一次私有目录扫描，重新导出小程序包。"));
         arr.put(tool("packages", "查看已导出的小程序包清单。"));
-        arr.put(tool("roots", "列出本服务允许访问的根目录。"));
+        arr.put(tool("page_images", "让当前打开的 WebView 页面自己把 DOM 里的图片 URL 全吐出来。"
+                        + "小工具实时联网加载的图，用这个抓 URL 最准。"));
+        arr.put(tool("fetch_image", "用小红书进程的网络身份下载一个图片 URL，直接返回图片内容。"
+                        + "用来拿需要 Referer / Cookie 的 CDN 图。",
+                prop("url", "string", "图片完整 URL"),
+                "url"));
+        arr.put(tool("fetch_text", "用小红书进程的网络身份下载一个 URL，返回文本（接口 JSON、JS 等）。",
+                prop("url", "string", "完整 URL"),
+                "url"));
         return arr;
     }
 
@@ -604,7 +708,15 @@ public class MiniServer {
                                             Math.min(a.optInt("maxBytes", 200000), 4 * 1024 * 1024)));
                 case "read_image": return toolReadImage(a.optString("path", ""));
                 case "list_images":return text(toolListImages(a.optString("path", ""),
+                                            a.optString("source", "pkg"),
                                             Math.min(a.optInt("limit", 100), 800)));
+                case "find_packages": return text(toolFindPackages(a.optString("path", ""),
+                                            a.optInt("minKB", 4),
+                                            Math.min(a.optInt("limit", 200), 2000)));
+                case "zip_list":   return text(toolZipList(a.optString("path", ""),
+                                            a.optString("filter", "")));
+                case "zip_image":  return toolZipImage(a.optString("path", ""),
+                                            a.optString("entry", ""));
                 case "stat":       return text(toolStat(a.optString("path", "")));
                 case "tail_log":   return text(toolTailLog(a.optString("name", "boot"),
                                             Math.min(a.optInt("kb", 100), 2048)));
@@ -612,6 +724,9 @@ public class MiniServer {
                                    return text("已触发扫描，稍后调用 packages 查看结果。");
                 case "packages":   return text(toolPackages());
                 case "roots":      return text(toolRoots());
+                case "page_images":return text(XhsSpy.collectPageImages());
+                case "fetch_image":return toolFetch(a.optString("url", ""), true);
+                case "fetch_text": return toolFetch(a.optString("url", ""), false);
                 default:           return errResult("未知工具: " + name);
             }
         } catch (Exception e) {
@@ -810,17 +925,91 @@ public class MiniServer {
         return r;
     }
 
-    private String toolListImages(String path, int limit) {
+    // --- 图片：三种来源 ---
+
+    static boolean isImageName(String n) {
+        String l = n.toLowerCase(Locale.US);
+        return l.endsWith(".jpg") || l.endsWith(".jpeg") || l.endsWith(".png")
+                || l.endsWith(".webp") || l.endsWith(".gif")
+                || l.endsWith(".bmp") || l.endsWith(".avif") || l.endsWith(".svg");
+    }
+
+    /** 递归找 zip / 包文件，不依赖 sweep */
+    private void findZips(File dir, List<File> acc, int depth, int maxDepth, long minBytes) {
+        if (depth > maxDepth || acc.size() > 400) return;
+        if (dir == null || !dir.isDirectory()) return;
+        File[] kids = dir.listFiles();
+        if (kids == null) return;
+        for (File f : kids) {
+            if (acc.size() > 400) return;
+            if (f.isDirectory()) {
+                String n = f.getName();
+                if (n.equals("lib") || n.equals("databases") || n.equals("shared_prefs"))
+                    continue;
+                findZips(f, acc, depth + 1, maxDepth, minBytes);
+            } else if (f.length() >= minBytes) {
+                String l = f.getName().toLowerCase(Locale.US);
+                if (l.endsWith(".zip") || l.endsWith(".pkg") || l.endsWith(".wxapkg")
+                        || l.endsWith(".redpkg") || l.endsWith(".mtpkg")
+                        || l.endsWith(".rpkg")) {
+                    acc.add(f);
+                }
+            }
+        }
+    }
+
+    private String toolListImages(String path, String source, int limit) {
+        if (source == null || source.isEmpty()) source = "pkg";
+        StringBuilder b = new StringBuilder();
+
+        if ("pkg".equals(source)) {
+            List<File> zips = new ArrayList<>();
+            if (path != null && !path.isEmpty()) {
+                File d = resolve(path);
+                if (d != null) findZips(d.isDirectory() ? d : d.getParentFile(), zips, 0, 60, 4096);
+            } else {
+                for (File r : roots) if (r != null) findZips(r, zips, 0, 60, 4096);
+            }
+            b.append("扫到 ").append(zips.size()).append(" 个 zip 包\n\n");
+            int total = 0;
+            for (File z : zips) {
+                if (total >= limit) break;
+                List<String> names = new ArrayList<>();
+                try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(z)) {
+                    java.util.Enumeration<? extends java.util.zip.ZipEntry> en = zf.entries();
+                    while (en.hasMoreElements() && names.size() < 300) {
+                        java.util.zip.ZipEntry e = en.nextElement();
+                        if (!e.isDirectory() && isImageName(e.getName())) names.add(e.getName());
+                    }
+                } catch (Exception ignored) { continue; }
+                if (names.isEmpty()) continue;
+                b.append("== ").append(z.getAbsolutePath())
+                 .append("  (").append(human(z.length())).append(", ")
+                 .append(names.size()).append(" 张图) ==\n");
+                for (String n : names) {
+                    if (total >= limit) { b.append("  ...(已达上限)\n"); break; }
+                    b.append("  ").append(z.getAbsolutePath()).append("::").append(n).append('\n');
+                    total++;
+                }
+                b.append('\n');
+            }
+            b.append("用 zip_image 读：path=<zip路径> entry=<包内路径>。\n");
+            b.append("也可以直接看 http://127.0.0.1:").append(port).append("/img?src=pkg");
+            return b.toString();
+        }
+
         List<File> imgs = new ArrayList<>();
         if (path != null && !path.isEmpty()) {
             File d = resolve(path);
-            if (d != null) collectImages(d.isDirectory() ? d : d.getParentFile(), imgs, 0, limit);
+            if (d != null) collectImages(d.isDirectory() ? d : d.getParentFile(),
+                    imgs, 0, limit, "mini".equals(source));
         } else {
-            for (File r : roots) if (r != null) collectImages(r, imgs, 0, limit);
+            for (File r : roots) if (r != null)
+                collectImages(r, imgs, 0, limit, "mini".equals(source));
         }
         Collections.sort(imgs, (x, y) -> Long.compare(y.lastModified(), x.lastModified()));
-        StringBuilder b = new StringBuilder();
-        b.append("图片 ").append(imgs.size()).append(" 张（新的在前）\n\n");
+        b.append("图片 ").append(imgs.size()).append(" 张（新的在前，source=")
+         .append(source).append("）\n\n");
         for (File f : imgs) {
             b.append(human(f.length())).append('\t')
              .append(fmt(f.lastModified())).append('\t')
@@ -828,6 +1017,135 @@ public class MiniServer {
         }
         b.append("\n用 read_image 传路径即可查看。");
         return b.toString();
+    }
+
+    private String toolFindPackages(String path, int minKB, int limit) {
+        List<File> zips = new ArrayList<>();
+        if (path != null && !path.isEmpty()) {
+            File d = resolve(path);
+            if (d != null) findZips(d.isDirectory() ? d : d.getParentFile(), zips, 0, 60,
+                    Math.max(1, minKB) * 1024L);
+        } else {
+            for (File r : roots) if (r != null)
+                findZips(r, zips, 0, 60, Math.max(1, minKB) * 1024L);
+        }
+        Collections.sort(zips, (x, y) -> Long.compare(y.length(), x.length()));
+        StringBuilder b = new StringBuilder();
+        b.append("找到 ").append(zips.size()).append(" 个包文件（按体积倒序）\n\n");
+        int n = 0;
+        for (File z : zips) {
+            if (n++ >= limit) { b.append("...(已达上限)\n"); break; }
+            String mark = "";
+            try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(z)) {
+                int imgs = 0, htmls = 0, jss = 0;
+                java.util.Enumeration<? extends java.util.zip.ZipEntry> en = zf.entries();
+                while (en.hasMoreElements()) {
+                    java.util.zip.ZipEntry e = en.nextElement();
+                    if (e.isDirectory()) continue;
+                    String nm = e.getName().toLowerCase(Locale.US);
+                    if (isImageName(nm)) imgs++;
+                    else if (nm.endsWith(".html")) htmls++;
+                    else if (nm.endsWith(".js")) jss++;
+                }
+                mark = "  图" + imgs + " html" + htmls + " js" + jss;
+            } catch (Exception ignored) { mark = "  (不是有效 zip)"; }
+            b.append(human(z.length())).append('\t').append(z.getAbsolutePath()).append(mark).append('\n');
+        }
+        return b.toString();
+    }
+
+    private String toolZipList(String path, String filter) {
+        File f = resolve(path);
+        if (f == null || !f.isFile()) return "不是可读文件: " + path;
+        String fl = filter == null ? "" : filter.toLowerCase(Locale.US);
+        StringBuilder b = new StringBuilder();
+        b.append("包: ").append(f.getAbsolutePath()).append('\n');
+        try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(f)) {
+            java.util.Enumeration<? extends java.util.zip.ZipEntry> en = zf.entries();
+            int all = 0, shown = 0;
+            while (en.hasMoreElements()) {
+                java.util.zip.ZipEntry e = en.nextElement();
+                if (e.isDirectory()) continue;
+                all++;
+                String nm = e.getName();
+                if (!fl.isEmpty() && !nm.toLowerCase(Locale.US).contains(fl)) continue;
+                if (shown >= 800) { b.append("...(省略)\n"); break; }
+                b.append(String.format(Locale.US, "%10s  ", human(e.getSize())))
+                 .append(nm);
+                if (isImageName(nm)) b.append("   [图片]");
+                b.append('\n');
+                shown++;
+            }
+            b.append("\n共 ").append(all).append(" 个条目，列出 ").append(shown).append(" 个。");
+            b.append("\n读图用 zip_image，参数 path + entry。");
+        } catch (Exception e) {
+            return "不是有效 zip: " + e;
+        }
+        return b.toString();
+    }
+
+    private org.json.JSONObject toolZipImage(String zipPath, String entry) throws Exception {
+        File z = resolve(zipPath);
+        if (z == null || !z.isFile()) return errResult("zip 不可读: " + zipPath);
+        if (entry == null || entry.isEmpty()) return errResult("缺少 entry 参数");
+        try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(z)) {
+            java.util.zip.ZipEntry e = zf.getEntry(entry);
+            if (e == null) {
+                java.util.Enumeration<? extends java.util.zip.ZipEntry> en = zf.entries();
+                while (en.hasMoreElements()) {
+                    java.util.zip.ZipEntry x = en.nextElement();
+                    if (x.getName().equals(entry) || x.getName().endsWith("/" + entry)) {
+                        e = x; break;
+                    }
+                }
+            }
+            if (e == null) return errResult("包里没有这个条目: " + entry);
+            if (e.getSize() > 4 * 1024 * 1024)
+                return errResult("图片太大: " + human(e.getSize()));
+
+            byte[] data;
+            try (java.io.InputStream in = zf.getInputStream(e)) {
+                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[65536];
+                int r;
+                while ((r = in.read(buf)) > 0) bos.write(buf, 0, r);
+                data = bos.toByteArray();
+            }
+
+            String n = e.getName().toLowerCase(Locale.US);
+            String mime = "image/jpeg";
+            if (n.endsWith(".png")) mime = "image/png";
+            else if (n.endsWith(".webp")) mime = "image/webp";
+            else if (n.endsWith(".gif")) mime = "image/gif";
+            else if (n.endsWith(".bmp")) mime = "image/bmp";
+            else if (n.endsWith(".avif")) mime = "image/avif";
+            else if (n.endsWith(".svg")) mime = "image/svg+xml";
+
+            org.json.JSONArray arr = new org.json.JSONArray();
+            if ("image/svg+xml".equals(mime)) {
+                org.json.JSONObject c = new org.json.JSONObject();
+                c.put("type", "text");
+                c.put("text", "SVG 源文件：\n\n" + new String(data, "UTF-8"));
+                arr.put(c);
+            } else {
+                org.json.JSONObject c = new org.json.JSONObject();
+                c.put("type", "image");
+                c.put("data", android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP));
+                c.put("mimeType", mime);
+                arr.put(c);
+            }
+            org.json.JSONObject t = new org.json.JSONObject();
+            t.put("type", "text");
+            t.put("text", z.getName() + " :: " + e.getName() + "  " + human(data.length) + "  " + mime);
+            arr.put(t);
+
+            org.json.JSONObject res = new org.json.JSONObject();
+            res.put("content", arr);
+            res.put("isError", false);
+            return res;
+        } catch (Exception ex) {
+            return errResult("读取失败: " + ex);
+        }
     }
 
     private String toolStat(String path) {
@@ -853,6 +1171,97 @@ public class MiniServer {
         if (!f.exists()) return "还没有 " + name + ".log";
         return "== " + name + ".log (" + human(f.length()) + ") ==\n\n"
                 + readTail(f, kb * 1024);
+    }
+
+    /** 用 App 的网络身份下载一个 URL（图片或文本） */
+    private org.json.JSONObject toolFetch(String url, boolean asImage) throws Exception {
+        if (url == null || !(url.startsWith("http://") || url.startsWith("https://"))) {
+            return errResult("需要完整的 http(s) URL: " + url);
+        }
+        java.net.HttpURLConnection c = null;
+        try {
+            java.net.URL u = new java.net.URL(url);
+            c = (java.net.HttpURLConnection) u.openConnection();
+            c.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 "
+                    + "(KHTML, like Gecko) Version/4.0 Chrome/131.0.0.0 Mobile Safari/537.36");
+            c.setRequestProperty("Referer", "https://www.xiaohongshu.com/");
+            c.setRequestProperty("Accept", asImage ? "image/avif,image/webp,image/*,*/*;q=0.8"
+                                                   : "*/*");
+            c.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9");
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(25000);
+            c.setInstanceFollowRedirects(true);
+
+            int code = c.getResponseCode();
+            String ctype = c.getContentType();
+            if (code >= 400) {
+                return errResult("HTTP " + code + "  " + url);
+            }
+
+            java.io.InputStream in = c.getInputStream();
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[65536];
+            int r, total = 0;
+            while ((r = in.read(buf)) > 0) {
+                bos.write(buf, 0, r);
+                total += r;
+                if (total > 6 * 1024 * 1024) break;
+            }
+            in.close();
+            byte[] data = bos.toByteArray();
+
+            // 看 magic 判断是不是图
+            boolean isImg = data.length > 4 && (
+                    (data[0] == (byte) 0xFF && data[1] == (byte) 0xD8)
+                    || (data[0] == (byte) 0x89 && data[1] == 'P')
+                    || (data[0] == 'G' && data[1] == 'I')
+                    || (data[0] == 'R' && data[1] == 'I')
+                    || (data.length > 12 && data[8] == 'W' && data[9] == 'E'
+                        && data[10] == 'B' && data[11] == 'P'));
+
+            org.json.JSONArray arr = new org.json.JSONArray();
+            if (isImg && asImage) {
+                String mime = "image/jpeg";
+                if (data[0] == (byte) 0x89) mime = "image/png";
+                else if (data[0] == 'G') mime = "image/gif";
+                else if (data.length > 12 && data[8] == 'W') mime = "image/webp";
+                else if (data[0] == 'R') mime = "image/webp";
+
+                org.json.JSONObject img = new org.json.JSONObject();
+                img.put("type", "image");
+                img.put("data", android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP));
+                img.put("mimeType", mime);
+                arr.put(img);
+
+                org.json.JSONObject t = new org.json.JSONObject();
+                t.put("type", "text");
+                t.put("text", human(data.length) + "  " + mime + "\n" + url);
+                arr.put(t);
+            } else {
+                String txt;
+                if (isImg) {
+                    txt = "这是个图片（" + human(data.length) + "），用 asImage 模式能直接看。";
+                } else {
+                    txt = new String(data, "UTF-8");
+                    if (txt.length() > 200000) txt = txt.substring(0, 200000) + "\n…(截断)";
+                }
+                org.json.JSONObject t = new org.json.JSONObject();
+                t.put("type", "text");
+                t.put("text", "HTTP " + code + "  " + (ctype == null ? "" : ctype)
+                        + "  " + human(data.length) + "\n" + url + "\n\n" + txt);
+                arr.put(t);
+            }
+
+            org.json.JSONObject res = new org.json.JSONObject();
+            res.put("content", arr);
+            res.put("isError", false);
+            return res;
+        } catch (Exception ex) {
+            return errResult("下载失败: " + ex + "\n" + url);
+        } finally {
+            if (c != null) try { c.disconnect(); } catch (Exception ignored) {}
+        }
     }
 
     private String toolPackages() {
@@ -903,23 +1312,37 @@ public class MiniServer {
         return "/";
     }
 
-    private void collectImages(File dir, List<File> acc, int depth, int cap) {
+    /** 缓存目录/头像/图标这些图对「找小工具素材」是纯噪声，smart 模式下跳过 */
+    private static final String[] JUNK_DIRS = {
+            "app_webview", "image_cache", "glide", "picasso", "fresco",
+            "thumb", "thumbnail", "avatars", "avatar", "emoji", "sticker",
+            "emojiCache", "splash", "share_img", ".thumbnails"
+    };
+
+    private void collectImages(File dir, List<File> acc, int depth, int cap, boolean smart) {
         if (depth > 9 || acc.size() >= cap) return;
         if (!dir.isDirectory()) return;
+        String dn = dir.getName().toLowerCase(Locale.US);
+        if (smart) {
+            for (String j : JUNK_DIRS) {
+                if (dn.contains(j)) return;
+            }
+            // mini 模式只收「像小工具」的目录
+            if (depth > 0 && !dn.contains("mini") && !dn.contains("tool")
+                    && !dn.contains("game") && !dn.contains("webapp")) {
+                // 允许继续往下找，但本层文件不收
+            }
+        }
         File[] kids = dir.listFiles();
         if (kids == null) return;
         for (File f : kids) {
             if (acc.size() >= cap) return;
             if (f.isDirectory()) {
                 if (f.getName().startsWith(".")) continue;
-                collectImages(f, acc, depth + 1, cap);
+                collectImages(f, acc, depth + 1, cap, smart);
             } else {
                 String n = f.getName().toLowerCase(Locale.US);
-                if (n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".png")
-                        || n.endsWith(".webp") || n.endsWith(".gif")
-                        || n.endsWith(".bmp") || n.endsWith(".avif")) {
-                    if (f.length() > 512) acc.add(f);
-                }
+                if (isImageName(n) && f.length() > 512) acc.add(f);
             }
         }
     }

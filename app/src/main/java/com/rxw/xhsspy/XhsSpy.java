@@ -190,7 +190,91 @@ public class XhsSpy implements IXposedHookLoadPackage {
         }
     }
 
-    // ------------------------------------------------------------ 本地 HTTP 服务
+    // ------------------------------------------------------------ WebView 实例池（给 MCP 探针用）
+
+    static final java.util.List<Object> sWebViews =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<Object>());
+
+    static void registerWebView(Object wv) {
+        if (wv == null) return;
+        synchronized (sWebViews) {
+            if (!sWebViews.contains(wv)) {
+                sWebViews.add(wv);
+                while (sWebViews.size() > 6) sWebViews.remove(0);
+            }
+        }
+    }
+
+    static final String PROBE_JS =
+            "(function(){try{"
+          + "var out=[],seen={};"
+          + "function add(u){if(!u)return;u=String(u);"
+          + "if(u.indexOf('data:')===0)return;if(u.length>2000)return;"
+          + "if(!seen[u]){seen[u]=1;out.push(u);}}"
+          + "var els=document.querySelectorAll('img');"
+          + "for(var i=0;i<els.length;i++){add(els[i].currentSrc||els[i].src);"
+          + "if(els[i].srcset)add(els[i].srcset.split(',')[0].split(' ')[0]);}"
+          + "var all=document.querySelectorAll('*');"
+          + "for(var j=0;j<all.length&&j<4000;j++){"
+          + "var bg=getComputedStyle(all[j]).backgroundImage;"
+          + "if(bg&&bg!=='none'){var m=bg.match(/url\\([\"']?(.*?)[\"']?\\)/);if(m)add(m[1]);}}"
+          + "var vs=document.querySelectorAll('video');"
+          + "for(var k=0;k<vs.length;k++){if(vs[k].poster)add(vs[k].poster);"
+          + "if(vs[k].currentSrc)add(vs[k].currentSrc);}"
+          + "return JSON.stringify({url:location.href,title:document.title,"
+          + "count:out.length,images:out.slice(0,300)});"
+          + "}catch(e){return JSON.stringify({error:String(e)});}})()";
+
+    /** 让页面自己把 DOM 里的图片 URL 吐出来。返回 JSON 文本。 */
+    static String collectPageImages() {
+        StringBuilder sb = new StringBuilder();
+        java.util.List<Object> snapshot;
+        synchronized (sWebViews) { snapshot = new java.util.ArrayList<>(sWebViews); }
+        if (snapshot.isEmpty()) {
+            return "{\"error\":\"还没抓到 WebView 实例。先在小红书里打开小工具，让它加载一次。\"}";
+        }
+        sb.append("{\"pages\":[");
+        boolean first = true;
+        for (Object wv : snapshot) {
+            if (!(wv instanceof android.webkit.WebView)) continue;
+            final android.webkit.WebView web = (android.webkit.WebView) wv;
+            final Object lock = new Object();
+            final String[] box = new String[]{null};
+            try {
+                web.post(() -> {
+                    try {
+                        web.evaluateJavascript(PROBE_JS, value -> {
+                            synchronized (lock) {
+                                box[0] = value;
+                                lock.notifyAll();
+                            }
+                        });
+                    } catch (Throwable t) {
+                        synchronized (lock) { box[0] = null; lock.notifyAll(); }
+                    }
+                });
+                synchronized (lock) {
+                    if (box[0] == null) lock.wait(4000);
+                }
+            } catch (Throwable ignored) {}
+            if (box[0] == null) continue;
+            String v = box[0];
+            // evaluateJavascript 返回的是 JSON 字符串的 JSON 字面量，去掉外层引号
+            if (v.startsWith("\"") && v.endsWith("\"")) {
+                v = v.substring(1, v.length() - 1)
+                        .replace("\\\"", "\"").replace("\\\\", "\\")
+                        .replace("\\n", "\n").replace("\\/", "/");
+            }
+            if (!first) sb.append(',');
+            first = false;
+            sb.append(v);
+        }
+        sb.append("]}");
+        if (first) return "{\"error\":\"WebView 没有响应\"}";
+        return sb.toString();
+    }
+
+    // ------------------------------------------------------------ 启动 HTTP + MCP 服务
 
     static void startServer() {
         if (sServer != null) return;
@@ -383,6 +467,13 @@ public class XhsSpy implements IXposedHookLoadPackage {
                             String u = String.valueOf(p.args[0]);
                             log("webview", "loadUrl " + u);
                             if (isLikelyPackageUrl(u)) saveRaw(u, "(loadUrl)");
+                        } catch (Throwable ignored) {}
+                    }
+
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam p) {
+                        try {
+                            registerWebView(p.thisObject);
                         } catch (Throwable ignored) {}
                     }
                 });
