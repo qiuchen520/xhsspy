@@ -156,18 +156,38 @@ public class XhsSpy implements IXposedHookLoadPackage {
                         initOut(sApp);
                         log("boot", "app attached: " + sApp.getPackageName());
                         log("boot", "OUT=" + OUT.getAbsolutePath());
-                        startServer();
-                        new Thread(() -> {
-                            try {
-                                // 等 App 初始化完、小程序缓存落盘
-                                Thread.sleep(25000);
-                                sweep("boot");
-                            } catch (Throwable t) {
-                                log("crash", "sweep thread " + t);
-                            }
-                        }, "XhsSpySweep").start();
+
+                        // 小红书是多进程的，HTTP 服务只在主进程起，
+                        // 否则每个子进程占一个端口，乱。
+                        String proc = currentProcessName();
+                        boolean main = proc == null || !proc.contains(":");
+                        log("boot", "process=" + proc + " main=" + main);
+                        if (main) {
+                            startServer();
+                            new Thread(() -> {
+                                try {
+                                    Thread.sleep(25000);
+                                    sweep("boot");
+                                } catch (Throwable t) {
+                                    log("crash", "sweep thread " + t);
+                                }
+                            }, "XhsSpySweep").start();
+                        }
                     }
                 });
+    }
+
+    static String currentProcessName() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                return android.app.Application.getProcessName();
+            }
+            java.lang.reflect.Method m = Class.forName("android.app.ActivityThread")
+                    .getMethod("currentProcessName");
+            return (String) m.invoke(null);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     // ------------------------------------------------------------ 本地 HTTP 服务
