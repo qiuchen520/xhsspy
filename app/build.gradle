@@ -29,7 +29,9 @@ android {
     buildTypes {
         release {
             minifyEnabled false
-            // 模块不需要签名混淆，LSPatch 会重新签它打包后的 App
+            // 模块必须能直接安装到手机，未签名的 APK 装不上。
+            // 用 debug 证书签就够（LSPatch 不校验证书，只要求 APK 可安装）。
+            signingConfig signingConfigs.debug
         }
     }
 
