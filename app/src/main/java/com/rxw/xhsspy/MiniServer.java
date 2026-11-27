@@ -249,6 +249,13 @@ public class MiniServer {
                 break;
             }
             case "/classes":     sendJson(out, 200, XhsSpy.loadedClasses(q.get("q"))); break;
+            case "/grep": {
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                bo.write(grepFile(q.get("path"), q.get("q"),
+                        parseInt(q.get("n"), 60), parseInt(q.get("c"), 80)).getBytes("UTF-8"));
+                sendBytes(out, 200, "text/plain; charset=utf-8", bo.toByteArray());
+                break;
+            }
             case "/probe": {
                 java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
                 bo.write(XhsSpy.probeAll().getBytes("UTF-8"));
@@ -865,6 +872,12 @@ public class MiniServer {
                 prop("q", "string", "关键字，默认 webview")));
         arr.put(tool("webviews", "列出所有进程里登记到的 WebView 实例：类名、能不能跑 JS、端口。"));
         arr.put(tool("probe", "一键诊断：本进程 pid / 端口 / 性能开关 / 内存 / 所有进程的 WebView。"));
+        arr.put(tool("grep", "在一个文件里搜关键词，返回命中行号 + 前后文。用来翻大体积打包 JS。",
+                prop("path", "string", "文件绝对路径"),
+                prop("q", "string", "关键词"),
+                prop("n", "number", "最多返回多少条，默认 60"),
+                prop("c", "number", "每条左右各留多少字符，默认 80"),
+                "path", "q"));
         arr.put(tool("set_switch", "打开或关闭一个性能开关。开着会拖慢手机，抓包时才需要。",
                 prop("name", "string", "开关名：body / file / net"),
                 prop("value", "string", "on 或 off"),
@@ -940,6 +953,8 @@ public class MiniServer {
                 case "classes":    return text(XhsSpy.loadedClassesAll(a.optString("q", "webview")));
                 case "webviews":   return text(XhsSpy.webViewReportAll());
                 case "probe":      return text(XhsSpy.probeAll());
+                case "grep":       return text(grepFile(a.optString("path"), a.optString("q"),
+                                            a.optInt("n", 60), a.optInt("c", 80)));
                 case "switches": return text(XhsSpy.switches());
                 case "set_switch": return text(XhsSpy.setSwitch(
                         a.optString("name"), a.optString("value")));
@@ -958,6 +973,62 @@ public class MiniServer {
         } catch (Exception e) {
             return errResult("执行失败: " + e);
         }
+    }
+
+    private static int parseInt(String v, int def) {
+        try { return Integer.parseInt(String.valueOf(v).trim()); }
+        catch (Throwable t) { return def; }
+    }
+
+    /** 在大文件里搜关键词，返回命中行和左右上下文。没有 grep 就只能干瞪眼。 */
+    private String grepFile(String path, String kw, int maxHits, int ctx) {
+        if (path == null || path.isEmpty()) return "缺少 path";
+        if (kw == null || kw.isEmpty()) return "缺少 q";
+        File f = resolve(path);
+        if (f == null || !f.isFile()) return "文件不存在: " + path;
+        if (f.length() > 32L * 1024 * 1024) return "文件太大（>32MB），换个小的";
+        int limit = Math.max(1, Math.min(maxHits <= 0 ? 60 : maxHits, 400));
+        int around = Math.max(0, Math.min(ctx, 200));
+        StringBuilder sb = new StringBuilder();
+        sb.append(f.getName()).append("  ").append(human(f.length())).append('\n');
+        int hit = 0;
+        try {
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(new java.io.FileInputStream(f), "UTF-8"));
+            String line;
+            int ln = 0;
+            while ((line = br.readLine()) != null) {
+                ln++;
+                int at = line.indexOf(kw);
+                if (at < 0) {
+                    // 大小写不敏感再试一次
+                    if (line.toLowerCase().indexOf(kw.toLowerCase()) >= 0) at = 0;
+                    else continue;
+                }
+                hit++;
+                int from = Math.max(0, at - around);
+                int to = Math.min(line.length(), at + kw.length() + around);
+                sb.append("L").append(ln).append(": ");
+                if (from > 0) sb.append("…");
+                sb.append(line, from, to).append('\n');
+                if (hit >= limit) {
+                    sb.append("(到上限 ").append(limit).append(" 条就停了)\n");
+                    break;
+                }
+            }
+            br.close();
+        } catch (Throwable t) {
+            return "读取失败: " + t;
+        }
+        if (hit == 0) sb.append("没有命中「").append(kw).append("」\n");
+        else sb.append("共命中 ").append(hit).append(" 条\n");
+        return sb.toString();
+    }
+
+    private static String human(long n) {
+        if (n < 1024) return n + " B";
+        if (n < 1048576) return String.format(java.util.Locale.US, "%.1f KB", n / 1024.0);
+        return String.format(java.util.Locale.US, "%.1f MB", n / 1048576.0);
     }
 
     private org.json.JSONObject text(String s) throws Exception {
