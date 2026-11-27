@@ -58,6 +58,7 @@ public class XhsSpy implements IXposedHookLoadPackage {
     static final long MIN_PKG = 8L * 1024;
 
     static volatile Context sApp;
+    static volatile android.app.Activity sActivity;
     static volatile boolean sSwept = false;
 
     // 性能开关：默认全关。抓包/看写入时才打开，否则会拖慢整机
@@ -105,6 +106,7 @@ public class XhsSpy implements IXposedHookLoadPackage {
         safe(() -> hookSslPinning(lp.classLoader), "hookSslPinning");
         safe(() -> hookCertificatePinner(lp.classLoader), "hookCertificatePinner");
         safe(() -> hookFileWrite(lp.classLoader), "hookFileWrite");
+        safe(() -> hookActivity(lp.classLoader), "hookActivity");
     }
 
     // ------------------------------------------------------------ 工具
@@ -457,6 +459,62 @@ public class XhsSpy implements IXposedHookLoadPackage {
             }
         } catch (Throwable t) {
             log("crash", "startServer " + t);
+        }
+    }
+
+    // ------------------------------------------------------------ 转屏
+
+    static void hookActivity(ClassLoader cl) {
+        XC_MethodHook grab = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam p) {
+                try {
+                    android.app.Activity a = (android.app.Activity) p.thisObject;
+                    if (a != null) sActivity = a;
+                } catch (Throwable ignored) {}
+            }
+        };
+        try {
+            XposedHelpers.findAndHookMethod(android.app.Activity.class,
+                    "onResume", grab);
+        } catch (Throwable ignored) {}
+        try {
+            XposedHelpers.findAndHookMethod(android.app.Activity.class,
+                    "onCreate", android.os.Bundle.class, grab);
+        } catch (Throwable ignored) {}
+    }
+
+    /** 强制当前 Activity 转屏。mode: land / port / auto / toggle */
+    public static String rotate(String mode) {
+        final android.app.Activity a = sActivity;
+        if (a == null) return "{\"error\":\"找不到前台 Activity，先让小红书停在一个页面上\"}";
+        String m = (mode == null || mode.isEmpty()) ? "toggle" : mode.toLowerCase(java.util.Locale.US);
+        final int target;
+        if ("land".equals(m)) target = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
+        else if ("port".equals(m)) target = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT;
+        else if ("auto".equals(m)) target = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+        else {
+            // toggle：现在横的转竖，现在竖的转横
+            int rot = 0;
+            try {
+                android.view.WindowManager wm = (android.view.WindowManager)
+                        a.getSystemService(Context.WINDOW_SERVICE);
+                rot = wm.getDefaultDisplay().getRotation();
+            } catch (Throwable ignored) {}
+            boolean land = (rot == android.view.Surface.ROTATION_90
+                    || rot == android.view.Surface.ROTATION_270);
+            target = land
+                    ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                    : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
+        }
+        try {
+            a.runOnUiThread(() -> {
+                try { a.setRequestedOrientation(target); } catch (Throwable ignored) {}
+            });
+            return "{\"ok\":true,\"mode\":\"" + m + "\",\"orientation\":" + target
+                    + ",\"activity\":\"" + a.getClass().getName() + "\"}";
+        } catch (Throwable t) {
+            return "{\"error\":\"" + t + "\"}";
         }
     }
 
