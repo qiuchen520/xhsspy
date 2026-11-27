@@ -256,6 +256,8 @@ public class MiniServer {
                 sendBytes(out, 200, "text/plain; charset=utf-8", bo.toByteArray());
                 break;
             }
+            case "/ping":        sendJson(out, 200, "{\"ok\":true,\"port\":" + port
+                                     + ",\"pid\":" + android.os.Process.myPid() + "}"); break;
             case "/probe": {
                 java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
                 bo.write(XhsSpy.probeAll().getBytes("UTF-8"));
