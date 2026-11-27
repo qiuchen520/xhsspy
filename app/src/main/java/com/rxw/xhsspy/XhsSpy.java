@@ -59,6 +59,11 @@ public class XhsSpy implements IXposedHookLoadPackage {
 
     static volatile Context sApp;
     static volatile boolean sSwept = false;
+
+    // 性能开关：默认全关。抓包/看写入时才打开，否则会拖慢整机
+    static volatile boolean sLogBody = false;   // 记响应 body（很重）
+    static volatile boolean sLogFile = false;   // hook 文件写（很重）
+    static volatile boolean sLogNet  = false;   // 记每个网络 URL
     static volatile MiniServer sServer;
 
     public static File outDir() {
@@ -455,6 +460,22 @@ public class XhsSpy implements IXposedHookLoadPackage {
         }
     }
 
+    /** 运行时开关，返回当前全部状态 */
+    public static String setSwitch(String name, String val) {
+        boolean on = "1".equals(val) || "true".equalsIgnoreCase(val) || "on".equalsIgnoreCase(val);
+        String n = name == null ? "" : name.toLowerCase(java.util.Locale.US);
+        if ("body".equals(n)) sLogBody = on;
+        else if ("file".equals(n)) sLogFile = on;
+        else if ("net".equals(n)) sLogNet = on;
+        else return "{\"error\":\"unknown switch\"}";
+        return switches();
+    }
+
+    public static String switches() {
+        return "{\"logBody\":" + sLogBody + ",\"logFile\":" + sLogFile
+                + ",\"logNet\":" + sLogNet + "}";
+    }
+
     static void sweepNow() {
         sSwept = false;
         sweep("manual");
@@ -537,7 +558,7 @@ public class XhsSpy implements IXposedHookLoadPackage {
     }
 
     static void dumpResponse(Object resp, ClassLoader cl) {
-        if (resp == null) return;
+        if (resp == null || !sLogBody) return;
         try {
             Object req = XposedHelpers.callMethod(resp, "request");
             String u = String.valueOf(XposedHelpers.callMethod(req, "url"));
@@ -581,6 +602,7 @@ public class XhsSpy implements IXposedHookLoadPackage {
     }
 
     static void logNet(String s) {
+        if (!sLogNet) return;
         log("net", s);
     }
 
@@ -811,6 +833,8 @@ public class XhsSpy implements IXposedHookLoadPackage {
     // ------------------------------------------------------------ 文件写入监控
 
     static void hookFileWrite(ClassLoader cl) {
+        // 关掉时连 hook 都不装，省掉每次文件写走一遍 Xposed 桥
+        if (!sLogFile) return;
         XposedHelpers.findAndHookMethod(FileOutputStream.class, "<init>",
                 File.class, boolean.class, new XC_MethodHook() {
                     @Override
