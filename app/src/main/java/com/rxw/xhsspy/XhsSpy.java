@@ -169,24 +169,22 @@ public class XhsSpy implements IXposedHookLoadPackage {
                         String proc = currentProcessName();
                         boolean main = proc == null || !proc.contains(":");
                         log("boot", "process=" + proc + " main=" + main);
-                        // 每个进程都起服务：小工具跑在 :privileged_processN 里，
-                        // 主进程读不到那边的 WebView，只能各自开端口、互相转发。
-                        if (main) {
-                            startServer(true);
-                            new Thread(() -> {
+                        // 起服务是很重的事（文件 IO + bind socket），
+                        // 绝对不能放在 Application.attach 的主线程里。
+                        final boolean isMain = main;
+                        new Thread(() -> {
+                            if (isMain) {
+                                startServer(true);
                                 try {
                                     Thread.sleep(25000);
                                     sweep("boot");
                                 } catch (Throwable t) {
                                     log("crash", "sweep thread " + t);
                                 }
-                            }, "XhsSpySweep").start();
-                        } else {
-                            // 子进程也直接起服务：小工具的 WebView 可能不是
-                            // android.webkit.WebView（小红书有 R1 内核），
-                            // 等注册再起会永远等不到。
-                            startServer(false);
-                        }
+                            } else {
+                                startServer(false);
+                            }
+                        }, "XhsSpyBoot").start();
                     }
                 });
     }
@@ -206,15 +204,15 @@ public class XhsSpy implements IXposedHookLoadPackage {
 
     // ------------------------------------------------------------ WebView 实例池（给 MCP 探针用）
 
+    /** 别的进程报上来的端口。子进程起完服务就告诉主进程一声，省得每次盲扫。 */
+    static final java.util.Set<Integer> sPeerPorts =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<Integer>());
+
     static final java.util.List<Object> sWebViews =
             java.util.Collections.synchronizedList(new java.util.ArrayList<Object>());
 
     static void registerWebView(Object wv) {
         if (wv == null) return;
-        // 子进程第一次出现 WebView 时，把自己的服务拉起来
-        if (sServer == null && sApp != null) {
-            try { startServer(false); } catch (Throwable ignored) {}
-        }
         synchronized (sWebViews) {
             if (!sWebViews.contains(wv)) {
                 sWebViews.add(wv);
@@ -359,12 +357,30 @@ public class XhsSpy implements IXposedHookLoadPackage {
         return null;
     }
 
+    /** 子进程告诉主进程「我在这个端口」，带重试，主进程还没起也没关系 */
+    static void announcePort(final int myPort) {
+        for (int i = 0; i < 8; i++) {
+            if (httpGet("http://127.0.0.1:" + MiniServer.PORT_START
+                    + "/announce?port=" + myPort) != null) {
+                log("boot", "已上报端口 " + myPort);
+                return;
+            }
+            try { Thread.sleep(1500); } catch (Throwable ignored) {}
+        }
+    }
+
+    /** 已知的其它进程端口 */
+    static java.util.List<Integer> peerPorts() {
+        java.util.List<Integer> out;
+        synchronized (sPeerPorts) { out = new java.util.ArrayList<>(sPeerPorts); }
+        int self = (sServer != null) ? sServer.port : -1;
+        out.remove(Integer.valueOf(self));
+        return out;
+    }
+
     /** 挨个端口问过去，谁手里有 WebView 谁答 */
     static String evalJsRemote(String code, long timeoutMs) {
-        int self = (sServer != null) ? sServer.port : -1;
-        for (int p = MiniServer.PORT_START;
-             p < MiniServer.PORT_START + MiniServer.PORT_TRIES; p++) {
-            if (p == self) continue;
+        for (int p : peerPorts()) {
             java.net.HttpURLConnection c = null;
             try {
                 c = (java.net.HttpURLConnection)
@@ -433,10 +449,7 @@ public class XhsSpy implements IXposedHookLoadPackage {
         StringBuilder sb = new StringBuilder();
         sb.append("== 本进程 == ").append(osPid()).append('\n');
         sb.append(unwrapClasses(loadedClasses(q))).append('\n');
-        int self = (sServer != null) ? sServer.port : -1;
-        for (int p = MiniServer.PORT_START;
-             p < MiniServer.PORT_START + MiniServer.PORT_TRIES; p++) {
-            if (p == self) continue;
+        for (int p : peerPorts()) {
             String body = httpGet("http://127.0.0.1:" + p + "/classes?q="
                     + java.net.URLEncoder.encode(q == null ? "webview" : q));
             if (body == null) continue;
@@ -604,6 +617,7 @@ public class XhsSpy implements IXposedHookLoadPackage {
             MiniServer s = new MiniServer(roots, "", XhsSpy::sweepNow);
             if (s.start()) {
                 sServer = s;
+                if (!main) announcePort(s.port);
                 log("boot", "HTTP 服务已启动: " + s.localUrl()
                         + "  lan=" + s.lanBound + "  port=" + s.port);
                 if (main) {
