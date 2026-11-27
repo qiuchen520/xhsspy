@@ -1,176 +1,148 @@
-# XhsSpy — 小红书运行时侦察模块
+# XhsSpy
 
-只做三件事，做到位：
+注入小红书的 Xposed 模块。不 root，用 **LSPatch 本地模式**。
 
-1. **拆 SSL Pinning** —— 把流量交给电脑上的 mitmproxy
-2. **记录所有请求 URL** —— OkHttp / HttpURLConnection / WebView 三条路都埋点
-3. **扫描并导出小程序包** —— 模块跑在小红书进程里，天生拥有小红书的文件权限
-
-第 3 条是重点。**小程序包下载落盘之后，根本不需要抓包、不需要解密，直接就能拿出来。**
-微信小程序、小红书小程序、任何「先下载包再执行」的框架都是这个流程。
+抓起小程序/小工具源码、就地预览、改运行时数值、把手机交给 AI 操作。
 
 ---
 
-## 为什么不用虚拟空间
+## 装
 
-你原本的计划是「装虚拟空间 → 里面跑小红书 → XP 模块 hook」。这一步是白干的，原因：
+1. 下载 `XhsSpy.apk` 装上
+2. LSPatch 里选中「小红书」，勾上本模块，**勾「允许调试」**（`classes` 工具靠它）
+3. 打补丁，装补丁包
+4. 开小红书 → 悬浮胶囊出来 → 点开就是面板
 
-- VirtualXposed 在 Android 9+ 基本跑不动小红书这种多进程 + 有安全库的 App
-- 太极·阴 对新版小红书注入经常失败，而且它和 VirtualXposed 都是「套壳」，小程序的 native 库加载路径容易断
-- 多了两层壳，问题出在哪你都分不清
-
-绕过去，两条更短的路：
-
-| 条件 | 方案 | 需要的动作 |
-|---|---|---|
-| 设备有 root | **LSPosed**（Magisk 模块） | 装模块 → 勾选小红书 → 重启 App |
-| 没 root | **LSPatch**（免 root） | 模块打进 APK 副本 → 安装副本 |
-
-你的机器是 Android 10（SDK 29）。LSPatch 在 10 上工作良好，**推荐走这条**。
+**签名已经固定**（`CN=XhsSpy`，SHA256 `CE:B6:3F:69:...`）。
+以后新版本直接覆盖安装，不用卸载。LSPatch 那边也只需要重打一次补丁。
 
 ---
 
-## 一、编译
+## 悬浮窗
 
-需要 Android Studio 或命令行 Gradle + JDK 17。
+收起是一条胶囊，点开从胶囊里长成两栏。左边分类，右边就地干活，基本不跳浏览器。
 
-```bash
-cd xhsspy
-./gradlew assembleRelease
-# 产物：app/build/outputs/apk/release/app-release.apk
-```
+| 分类 | 能干什么 |
+|---|---|
+| 小程序 | 列出 `redmpV2/release` 下的包，导出/分享 |
+| 小工具 | 同上，多一个「预览」直接跑起来 |
+| 数值 | 搜 window 变量 / localStorage，就地改；带 JS 控制台和常用脚本 |
+| 壁纸 | 掘金壁纸，两列缩略图就地显示 |
+| 日志 | 读日志文件末尾，可选中复制 |
+| 内存 | 运行时内存 + 三个性能开关 |
+| 进程 | pid / 端口 / 各进程的 WebView，诊断用 |
 
-这个 APK 就是**模块本体**，不是装上去用的独立 App —— 它是给 LSPatch / LSPosed 吃的。
-
----
-
-## 二、打补丁（免 root 路线）
-
-1. 手机上装 [LSPatch](https://github.com/LSPosed/LSPatch)（官方 Release 的 apk）
-2. 准备小红书官方 APK（从 APKPure / 应用商店下载，别用已经魔改过的）
-3. LSPatch → 底部「管理」→ 右下角 `+` → **选择已安装的应用程序** → 小红书
-4. 模式选 **本地模式**
-5. 「嵌入模块」→ 勾选 **XhsSpy**（先把上一步编译出的 APK 装进手机，LSPatch 才能看到它）
-6. 勾选 **允许调试**（关键，后面 `run-as` 拉文件要用）
-7. 点「开始修补」→ 完成后卸载原版小红书 → 安装修补后的版本
-
-> 修补会把小红书重新签名，所以原版必须卸载。账号数据会掉，重新登录一次。
+**操作**：点胶囊任意位置 = 开/合。长按 0.7 秒 = 打开网页版。右边 `⟳` = 转屏（横屏小游戏用）。
 
 ---
 
-## 三、抓东西
+## 跨进程
 
-打开修补版小红书，**进那个小工具玩一会儿**（这点很重要，包只有在被访问时才会下载）。
+小红书是多进程的，小工具跑在 `:privileged_processN` 里。`static` 变量不跨进程，
+所以模块的做法是：
 
-然后看输出目录：
+- **每个进程各起一个 HTTP 服务**，主进程 8686，子进程自动往上找
+- 子进程起完服务后 `GET /announce?port=N` 告诉主进程
+- 主进程重启时主动扫一遍 `/ping` 把子进程找回来
+- `evalJs` 先问本进程，没有就转发给 `sPeerPorts` 里的端口
 
-```bash
-# 免 root 取文件（因为开了 debuggable）
-adb shell run-as com.xingin.xhs ls files/XhsSpy
-adb pull /sdcard/Android/data/com.xingin.xhs/files/XhsSpy ./XhsSpy
-```
-
-有 root 就直接：
-
-```bash
-adb pull /data/data/com.xingin.xhs/files/XhsSpy ./XhsSpy
-```
-
-目录结构：
-
-```
-XhsSpy/
-├── boot.log          启动、hook 挂载情况
-├── net.log           所有请求 URL（含请求体，JSON 的）
-├── resp.log          同步请求的响应体
-├── webview.log       WebView 加载过的地址、evaluateJavascript 的脚本
-├── file.log          写文件事件（能看出小程序包往哪落）
-├── ssl.log           pinning 绕过记录
-├── crash.log         hook 自身异常（不影响 App）
-├── raw/              疑似包体的原始响应
-└── pkg/
-    ├── manifest_boot.txt   全量扫描清单
-    └── *.zip               导出的候选包
-```
-
-**先看 `pkg/manifest_boot.txt`。** 里面每一行是：
-
-```
-[PKG]  2413568  /files/mini/6aef33cb9ec80e0015a88aca/app.zip  -> app-service.js,page-frame.html
-```
-
-`[PKG]` 表示这个 zip 内部含有 `app-service.js` / `page-frame` / `__APP__` 这类小程序标志文件 —— 那就是你要的东西。
+所以 `js_vars` / `js_eval` 对你看到的任何一个页面都有效，不管它在哪个进程。
 
 ---
 
-## 四、流量（可选但强烈建议）
+## 抓 WebView
 
-模块已经把 pinning 拆了，所以直接：
+不认类，认 View 树。
 
-```bash
-# 电脑上
-mitmproxy -p 8080
+小红书的 R1 内核不一定用 `android.webkit.WebView`，所以 `hookAllConstructors` 会漏。
+现在两条路一起走：
+
+1. hook `WebView` 构造（覆盖标准实现）
+2. `Activity.onResume` 后延迟 900ms / 3500ms 遍历 DecorView 的整棵 View 树，
+   把类名含 `webview` 的都登记下来（覆盖任何实现）
+
+执行 JS 时也分两条：标准 WebView 直接调 `evaluateJavascript`，
+其它实现用反射找同名同签名的方法，配 `Proxy` 接回调。
+
+---
+
+## 性能开关
+
+默认全关。开着会拖慢整机，抓包时才需要。
+
+| 开关 | 作用 |
+|---|---|
+| `body` | 记录 HTTP 响应体（每个请求 `peekBody(1MB)`，非常重） |
+| `file` | hook `FileOutputStream` 构造（每次写文件都穿一次 Xposed 桥） |
+| `net` | 记录每个网络 URL |
+
+悬浮窗「内存」页能点，MCP 用 `set_switch`。
+
+另外 `MiniPacker.list()` 有 60 秒缓存（125 个小工具目录递归数文件很贵），
+`startWatcher` 只比目录名不递归。
+
+---
+
+## MCP
+
+26 个工具，客户端连 `http://127.0.0.1:8686/mcp`。
+
+**文件**：`ls` `tree` `search` `read_file` `read_image` `list_images` `stat`
+`find_packages` `zip_list` `zip_image` `grep`
+
+**包**：`sweep` `packages`
+
+**页面**：`page_images` `fetch_image` `fetch_text`
+
+**运行时**：`js_vars` `js_set` `js_eval` `process_mem` `switches` `set_switch`
+
+**诊断**：`probe` `webviews` `classes` `roots`
+
+> `grep` 是给 1.8MB 那种打包 JS 用的：`grep(path=/…/js/app.js, q=prog)`，
+> 返回命中行号加前后文。`probe` 一次把所有进程的 WebView 情况列出来。
+
+---
+
+## 网页版
+
+同样的东西在浏览器里也能用：`http://127.0.0.1:8686/`
+
+```
+/          首页
+/mini      小程序/小工具列表
+/tool/<appid>/   小工具静态托管（带 window.xhs shim）
+/vars      数值面板
+/wall      掘金壁纸
+/pageimg   WebView 里抓到的图片
+/log?n=    日志（boot/float/mini/net/webview/float/crash）
+/probe     诊断
+/grep?path=&q=   文件里搜关键词
 ```
 
-手机 WiFi 设代理指向电脑 IP:8080，装 mitmproxy 的 CA 证书（Android 用户证书），
-然后在修补版小红书上打开小工具 —— `net.log` 里的 URL 和 mitmproxy 里的完整请求能对上。
+---
 
-**为什么不让模块自己抓响应体？** 因为：
-- 读 OkHttp 响应体会消费掉 stream，App 自己就拿不到了，容易把 App 搞崩
-- 交给 mitmproxy，你能看到 headers、cookie、压缩、二进制，一应俱全
-- 模块只负责「让代理能看见」，职责单一，出错面小
+## 排错
+
+**悬浮窗不出来**
+设置 → 应用 → 小红书 → 显示在其他应用上层。
+
+**`js_vars` 说没有 WebView**
+小工具跑在子进程，主进程的池子是空的。先看 `/probe` 或者 MCP 的 `probe`
+，它会列出每个进程登记到的 WebView。一个都没有的话用 `classes(q=webview)`
+看那个进程里到底有哪些 WebView 类。
+
+**卡**
+先关性能开关。还卡就看 `/log?n=float`。
+
+**装不上**
+卸载旧版再装。签名从 build-45 起就固定了，之后不该再有这个问题。
 
 ---
 
-## 五、拿到包之后
+## 构建
 
-```bash
-cd /workspace/xhs_dl
-python3 pkg_analyze.py ./XhsSpy/pkg/xxx.zip -o ./pkg_out
+GitHub Actions 自动编译。`versionCode` 用 run_number，每次递增。
+
 ```
-
-它会：识别包格式 → 解包 → 找 JS/JSON → 美化 → 出结构报告。
-
-如果包是加密的（zip 打不开、magic 不是 `PK`），报告里会指出实际的 magic 和熵值，
-那时候再针对性地逆向解密逻辑（先找谁调的 `decrypt`，再回到 `main.js` 里找算法）。
-
----
-
-## hook 点清单
-
-| 目标 | 方法 | 目的 |
-|---|---|---|
-| `Application.attach` | after | 拿 Context，启动延迟扫描线程 |
-| `okhttp3.OkHttpClient.newCall` | before | 记录请求 URL + JSON body |
-| `okhttp3.RealCall.execute` | after | `peekBody` 读响应 |
-| `okhttp3.RealCall$AsyncCall.run` | before | 异步请求的 URL |
-| `java.net.URL.openConnection` | before | 走 URLConnection 的请求 |
-| `WebView.loadUrl` (全部重载) | before | H5 里的小工具地址 |
-| `WebView.evaluateJavascript` | before | 注入的桥接脚本 |
-| `WebViewClient.shouldInterceptRequest` | before | 拦截到的资源 |
-| `SSLContext.init` | after | 抓真实 TrustManager 实例 |
-| `TrustManagerImpl.checkServerTrusted` | before | Conscrypt 放行 |
-| `X509TrustManagerExtensions.checkServerTrusted` | before | OkHttp 放行 |
-| `CertificatePinner.check` (全部重载) | before | OkHttp pinning 放行 |
-| `HttpsURLConnection.setHostnameVerifier` | before | 换掉用户设置的 verifier |
-| `FileOutputStream.<init>` | after | 定位小程序包落盘路径 |
-
----
-
-## 常见问题
-
-**装完修补版打不开 / 闪退**
-小红书有签名校验。LSPatch 的修补有概率触发，换 LSPatch 的「可调试」关掉再试，
-或者改用 LSPosed（需要 root）。
-
-**模块没生效**
-`boot.log` 里没有 `loaded pid=` 就是没注入。检查 LSPatch 里模块有没有勾上、作用域是不是 `com.xingin.xhs`。
-
-**pkg 目录空的**
-说明小工具包没落到 `files/` 下，或者被存在 `/data/data/com.xingin.xhs/cache/` 之外。
-去 `file.log` 里看写文件事件，那里会告诉你真实路径；
-或者看 `net.log` 里哪个 URL 带 `.zip` / `mini` 关键字，手动下。
-
-**`/sdcard` 写不进去**
-Android 10+ 分区存储的正常现象。模块已经自动退到
-`/sdcard/Android/data/com.xingin.xhs/files/XhsSpy/`，这个路径不需要任何权限。
+https://github.com/qiuchen520/xhsspy/releases/download/build-N/XhsSpy.apk
+```
