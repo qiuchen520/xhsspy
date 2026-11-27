@@ -12,8 +12,10 @@ android {
         // 模块本体其实不参与运行时存储策略，给高一点避免新版系统拒装
         targetSdk 33
         // 用 CI 的构建号当 versionCode，每次递增，覆盖安装不会卡住
-        versionCode (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
-        versionName "1." + (System.getenv("GITHUB_RUN_NUMBER") ?: "1")
+        def bn = System.getenv("GITHUB_RUN_NUMBER")
+        if (bn == null || bn.trim().isEmpty()) bn = "1"
+        versionCode(bn.trim().toInteger())
+        versionName("1." + bn.trim())
     }
 
     // 模块不是上架应用，不需要 Play 那套 targetSdk 规则
@@ -27,26 +29,24 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
-    // 固定签名：CI 里生成的 keystore 会提交回仓库，
+    // 固定签名：CI 里生成的 keystore 已经提交回仓库，
     // 以后每次覆盖安装都是同一张证书，不用再卸载重装。
     signingConfigs {
         fixed {
-            if (file("xhsspy.jks").exists()) {
-                storeFile file("xhsspy.jks")
-                storePassword "xhsspyfixed"
-                keyAlias "xhsspy"
-                keyPassword "xhsspyfixed"
-            }
+            storeFile file("xhsspy.jks")
+            storePassword "xhsspyfixed"
+            keyAlias "xhsspy"
+            keyPassword "xhsspyfixed"
         }
     }
 
     buildTypes {
         release {
             minifyEnabled false
-            // keystore 还没生成时退回 debug，保证第一次也能出包
-            signingConfig file("xhsspy.jks").exists()
+            // keystore 万一没跟上，退回 debug，保证还能出包
+            signingConfig(file("xhsspy.jks").exists()
                     ? signingConfigs.fixed
-                    : signingConfigs.debug
+                    : signingConfigs.debug)
         }
     }
 
