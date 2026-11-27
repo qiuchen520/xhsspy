@@ -290,6 +290,29 @@ public class XhsSpy implements IXposedHookLoadPackage {
         return sb.toString();
     }
 
+    /** 一键诊断：进程 / 端口 / WebView / 开关 / 内存 */
+    public static String probeAll() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("本进程 pid=").append(osPid())
+          .append(" 名=").append(String.valueOf(currentProcessName()))
+          .append(" 端口=").append(sServer == null ? -1 : sServer.port)
+          .append('\n');
+        sb.append("开关 ").append(switches()).append('\n');
+        try {
+            Runtime r = Runtime.getRuntime();
+            sb.append("内存 用").append((r.totalMemory() - r.freeMemory()) / 1048576)
+              .append("M / 上限").append(r.maxMemory() / 1048576).append("M\n");
+        } catch (Throwable ignored) {}
+        sb.append('\n').append(webViewReport());
+        for (int p : peerPorts()) {
+            String b = httpGet("http://127.0.0.1:" + p + "/webviews");
+            if (b == null) continue;
+            sb.append("== 端口 ").append(p).append(" ==\n").append(b);
+        }
+        if (peerPorts().isEmpty()) sb.append("(还没有子进程上报端口)\n");
+        return sb.toString();
+    }
+
     static boolean hasEvalJs(Object o) {
         if (o == null) return false;
         if (o instanceof android.webkit.WebView) return true;
