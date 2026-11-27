@@ -443,8 +443,8 @@ public class FloatingWindow {
 
     // ------------------------------------------------------------ 面板骨架
 
-    static final String[] NAV_KEYS = {"app", "tool", "vars", "wall", "log", "mem"};
-    static final String[] NAV_TEXT = {"小程序", "小工具", "数值", "壁纸", "日志", "内存"};
+    static final String[] NAV_KEYS = {"app", "tool", "vars", "wall", "log", "mem", "proc"};
+    static final String[] NAV_TEXT = {"小程序", "小工具", "数值", "壁纸", "日志", "内存", "进程"};
 
     static FrameLayout makePanel() {
         FrameLayout wrap = new FrameLayout(sCtx);
@@ -543,6 +543,7 @@ public class FloatingWindow {
                 case "wall": renderWall(); break;
                 case "log":  renderLog(); break;
                 case "mem":  renderMem(); break;
+                case "proc": renderProc(); break;
             }
         } catch (Throwable t) {
             sContent.addView(text("出错：" + t, 0xFFFF6B6B, 11));
@@ -977,6 +978,28 @@ public class FloatingWindow {
         box.addView(code, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(88)));
 
+        // 已存的常用脚本，点一下填进输入框
+        try {
+            JSONArray snips = new JSONArray(XhsSpy.getSnippets());
+            for (int i = 0; i < snips.length(); i++) {
+                JSONObject o = snips.optJSONObject(i);
+                if (o == null) continue;
+                final String nm = o.optString("name", "脚本");
+                final String cd = o.optString("code", "");
+                if (cd.isEmpty()) continue;
+                TextView sc = chip("★ " + nm, 0x1FFFFFFF, 0xCCE8D8FF, () -> {
+                    code.setText(cd);
+                    try { code.setSelection(cd.length()); } catch (Throwable ignored) {}
+                });
+                LinearLayout.LayoutParams slp2 = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+                slp2.bottomMargin = dp(4);
+                sc.setLayoutParams(slp2);
+                box.addView(sc);
+            }
+        } catch (Throwable ignored) {}
+
         final TextView result = text("", 0xCCFFFFFF, 10);
         result.setPadding(0, dp(5), 0, 0);
         result.setTextIsSelectable(true);
@@ -1006,6 +1029,12 @@ public class FloatingWindow {
                     }
                 });
             }, "XhsSpyJs").start();
+        }));
+        acts.addView(chip("存为常用", 0x2E22C55E, 0xFFC8F2D8, () -> {
+            String src = code.getText().toString().trim();
+            if (src.isEmpty()) { result.setText("代码是空的"); return; }
+            String r = XhsSpy.addSnippet(null, src);
+            result.setText(r.contains("\"ok\":true") ? "已存为常用脚本" : ("存失败：" + r));
         }));
         acts.addView(chip("关掉", 0x12FFFFFF, 0x99FFFFFF, () -> {
             setImeMode(false);
@@ -1230,18 +1259,29 @@ public class FloatingWindow {
             sContent.addView(row("读不到：" + t, 0xFFFF6B6B, 11));
         }
 
-        // WebView 情况：能不能跑 JS 一眼看出来
-        try {
-            sContent.addView(head("WebView"));
-            TextView wv = text(XhsSpy.webViewReportAll(), 0xC8FFFFFF, 9);
-            wv.setTypeface(Typeface.MONOSPACE);
-            wv.setTextIsSelectable(true);
-            wv.setPadding(dp(7), dp(6), dp(7), dp(6));
-            wv.setBackground(round(0x14FFFFFF, 8));
-            sContent.addView(wv);
-        } catch (Throwable t) {
-            sContent.addView(row("查不到：" + t, 0xFFFF6B6B, 10));
-        }
+    }
+
+    /** 进程诊断：pid / 端口 / 各进程的 WebView，能不能跑 JS 一眼看出来 */
+    static void renderProc() {
+        sContent.addView(head("进程诊断"));
+        sContent.addView(row("读取中…", C_DIM, 10));
+        new Thread(() -> {
+            final String txt;
+            try { txt = XhsSpy.probeAll(); }
+            catch (Throwable t) { UI.post(() -> { if ("proc".equals(sCur)) refresh(); }); return; }
+            UI.post(() -> {
+                if (sContent == null || !"proc".equals(sCur)) return;
+                sContent.removeAllViews();
+                sContent.addView(head("进程诊断"));
+                TextView tv = text(txt, 0xC8FFFFFF, 9);
+                tv.setTypeface(Typeface.MONOSPACE);
+                tv.setTextIsSelectable(true);
+                tv.setPadding(dp(7), dp(6), dp(7), dp(6));
+                tv.setBackground(round(0x14FFFFFF, 8));
+                sContent.addView(tv);
+                sContent.addView(chip("刷新", 0x12FFFFFF, 0x99FFFFFF, FloatingWindow::refresh));
+            });
+        }, "XhsSpyProc").start();
     }
 
     static View switchRow(String label, final String key, boolean on) {
