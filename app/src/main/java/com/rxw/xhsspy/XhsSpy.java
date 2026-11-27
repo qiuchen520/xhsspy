@@ -619,7 +619,8 @@ public class XhsSpy implements IXposedHookLoadPackage {
     /** 主进程启动后主动扫一遍，把已经在跑的子进程找回来（主进程重启时 sPeerPorts 是空的） */
     static void discoverPeers() {
         for (int p = MiniServer.PORT_START + 1;
-             p < MiniServer.PORT_START + MiniServer.PORT_TRIES; p++) {
+             p < MiniServer.PORT_BASE_SUB + MiniServer.PORT_TRIES; p++) {
+            if (p > MiniServer.PORT_START + 9 && p < MiniServer.PORT_BASE_SUB) continue;
             String b = httpGet("http://127.0.0.1:" + p + "/ping");
             if (b == null) continue;
             if (b.contains("\"ok\":true")) sPeerPorts.add(p);
@@ -874,7 +875,10 @@ public class XhsSpy implements IXposedHookLoadPackage {
                     new File("/sdcard/XhsSpy"),                  // 老路径兜底
             };
 
-            MiniServer s = new MiniServer(roots, "", XhsSpy::sweepNow);
+            // 主进程占 8686..8695，子进程一律从 8700 起，
+            // 免得 :pushservice 这种早起的小弟把 8686 抢了。
+            MiniServer s = new MiniServer(roots, "", XhsSpy::sweepNow,
+                    main ? MiniServer.PORT_START : MiniServer.PORT_BASE_SUB);
             if (s.start()) {
                 sServer = s;
                 if (!main) announcePort(s.port);
