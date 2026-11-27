@@ -97,7 +97,6 @@ public class XhsSpy implements IXposedHookLoadPackage {
         safe(() -> hookOkHttp(lp.classLoader), "hookOkHttp");
         safe(() -> hookHttpUrlConnection(lp.classLoader), "hookHttpUrlConnection");
         safe(() -> hookWebView(lp.classLoader), "hookWebView");
-        safe(() -> hookActivityForFloat(lp.classLoader), "hookActivityForFloat");
         safe(() -> hookSslPinning(lp.classLoader), "hookSslPinning");
         safe(() -> hookCertificatePinner(lp.classLoader), "hookCertificatePinner");
         safe(() -> hookFileWrite(lp.classLoader), "hookFileWrite");
@@ -188,27 +187,6 @@ public class XhsSpy implements IXposedHookLoadPackage {
             return (String) m.invoke(null);
         } catch (Throwable t) {
             return null;
-        }
-    }
-
-    /** Activity 一显示就往里塞悬浮球（不需要 OVERLAY 权限） */
-    static void hookActivityForFloat(final ClassLoader cl) {
-        try {
-            XposedHelpers.findAndHookMethod(android.app.Activity.class, "onResume",
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam p) {
-                            try {
-                                if (sApp != null) {
-                                    FloatingWindow.attachToActivity(
-                                            (android.app.Activity) p.thisObject);
-                                }
-                            } catch (Throwable ignored) {}
-                        }
-                    });
-            log("boot", "hookActivityForFloat ok");
-        } catch (Throwable t) {
-            log("crash", "hookActivityForFloat " + t);
         }
     }
 
