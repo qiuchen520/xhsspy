@@ -26,12 +26,26 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
+    // 固定签名：CI 里生成的 keystore 会提交回仓库，
+    // 以后每次覆盖安装都是同一张证书，不用再卸载重装。
+    signingConfigs {
+        fixed {
+            if (file("xhsspy.jks").exists()) {
+                storeFile file("xhsspy.jks")
+                storePassword "xhsspyfixed"
+                keyAlias "xhsspy"
+                keyPassword "xhsspyfixed"
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
-            // 模块必须能直接安装到手机，未签名的 APK 装不上。
-            // 用 debug 证书签就够（LSPatch 不校验证书，只要求 APK 可安装）。
-            signingConfig signingConfigs.debug
+            // keystore 还没生成时退回 debug，保证第一次也能出包
+            signingConfig file("xhsspy.jks").exists()
+                    ? signingConfigs.fixed
+                    : signingConfigs.debug
         }
     }
 
