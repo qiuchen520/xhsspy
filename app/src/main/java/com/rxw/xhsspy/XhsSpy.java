@@ -213,12 +213,93 @@ public class XhsSpy implements IXposedHookLoadPackage {
 
     static void registerWebView(Object wv) {
         if (wv == null) return;
+        boolean added = false;
         synchronized (sWebViews) {
             if (!sWebViews.contains(wv)) {
                 sWebViews.add(wv);
                 while (sWebViews.size() > 6) sWebViews.remove(0);
+                added = true;
             }
         }
+        if (added) {
+            try { log("webview", "登记 " + wv.getClass().getName()); } catch (Throwable ignored) {}
+        }
+    }
+
+    /** 从一个 Activity 的 View 树里把 WebView 抠出来。不认类，认名字和 ViewGroup。 */
+    static int harvestFromActivity(android.app.Activity a) {
+        if (a == null) return 0;
+        try {
+            android.view.View root = a.getWindow().getDecorView();
+            int[] budget = new int[]{600};
+            return walkViews(root, 0, budget);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    static int walkViews(android.view.View v, int depth, int[] budget) {
+        if (v == null || depth > 40 || budget[0] <= 0) return 0;
+        budget[0]--;
+        int found = 0;
+        try {
+            String cn = v.getClass().getName();
+            if (cn != null && cn.toLowerCase(java.util.Locale.US).contains("webview")) {
+                registerWebView(v);
+                found++;
+            }
+            if (v instanceof android.view.ViewGroup) {
+                android.view.ViewGroup g = (android.view.ViewGroup) v;
+                int n = g.getChildCount();
+                for (int i = 0; i < n && budget[0] > 0; i++) {
+                    found += walkViews(g.getChildAt(i), depth + 1, budget);
+                }
+            }
+        } catch (Throwable ignored) {}
+        return found;
+    }
+
+    /** 当前登记在案的 WebView 概览 */
+    public static String webViewReport() {
+        StringBuilder sb = new StringBuilder();
+        java.util.List<Object> snap;
+        synchronized (sWebViews) { snap = new java.util.ArrayList<>(sWebViews); }
+        sb.append("pid=").append(osPid())
+          .append(" port=").append(sServer == null ? -1 : sServer.port)
+          .append(" 登记数=").append(snap.size()).append('\n');
+        for (int i = 0; i < snap.size(); i++) {
+            Object o = snap.get(i);
+            sb.append(i).append(". ").append(o == null ? "null" : o.getClass().getName());
+            sb.append("  hasEval=").append(hasEvalJs(o)).append('\n');
+        }
+        return sb.toString();
+    }
+
+    /** 所有进程的 WebView 情况拼一起 */
+    public static String webViewReportAll() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("== 本进程 ==\n").append(webViewReport());
+        for (int p : peerPorts()) {
+            String b = httpGet("http://127.0.0.1:" + p + "/webviews");
+            if (b == null) continue;
+            sb.append("== 端口 ").append(p).append(" ==\n").append(b);
+        }
+        if (peerPorts().isEmpty()) {
+            sb.append("(还没有子进程上报端口，子进程可能刚起)\n");
+        }
+        return sb.toString();
+    }
+
+    static boolean hasEvalJs(Object o) {
+        if (o == null) return false;
+        if (o instanceof android.webkit.WebView) return true;
+        try {
+            for (java.lang.reflect.Method m : o.getClass().getMethods()) {
+                if ("evaluateJavascript".equals(m.getName())
+                        && m.getParameterTypes().length == 2) return true;
+            }
+        } catch (Throwable ignored) {}
+        return false;
     }
 
     static final String PROBE_JS =
@@ -323,50 +404,118 @@ public class XhsSpy implements IXposedHookLoadPackage {
         synchronized (sWebViews) { snapshot = new java.util.ArrayList<>(sWebViews); }
         if (snapshot.isEmpty()) return null;
         for (Object wv : snapshot) {
-            if (!(wv instanceof android.webkit.WebView)) continue;
-            final android.webkit.WebView web = (android.webkit.WebView) wv;
-            final Object lock = new Object();
-            final String[] box = new String[]{null};
+            String r = evalOn(wv, code, timeoutMs);
+            if (r == null) continue;
             try {
-                web.post(() -> {
-                    try {
-                        web.evaluateJavascript(code, value -> {
-                            synchronized (lock) {
-                                box[0] = value == null ? "null" : value;
-                                lock.notifyAll();
-                            }
-                        });
-                    } catch (Throwable t) {
-                        synchronized (lock) { box[0] = null; lock.notifyAll(); }
-                    }
-                });
-                synchronized (lock) {
-                    if (box[0] == null) lock.wait(Math.max(1000, timeoutMs));
-                }
-            } catch (Throwable ignored) {}
-            if (box[0] == null) continue;
-            String v = box[0];
-            try {
-                Object o = new org.json.JSONTokener(v).nextValue();
+                Object o = new org.json.JSONTokener(r).nextValue();
                 if (o == org.json.JSONObject.NULL) return "null";
                 return String.valueOf(o);
             } catch (Throwable t) {
-                return v;
+                return r;
             }
         }
         return null;
     }
 
+    /**
+     * 在一个 WebView 对象上跑 JS。
+     * 不强转 android.webkit.WebView —— 小红书有 R1 内核，实现类不一定是它。
+     * 先按标准 WebView 走，不行就用反射找 evaluateJavascript(String, ValueCallback)。
+     */
+    static String evalOn(final Object wv, final String code, long timeoutMs) {
+        if (wv == null) return null;
+        final Object lock = new Object();
+        final String[] box = new String[]{null};
+
+        Runnable task;
+        if (wv instanceof android.webkit.WebView) {
+            final android.webkit.WebView web = (android.webkit.WebView) wv;
+            web.post(() -> {
+                try {
+                    web.evaluateJavascript(code, value -> {
+                        synchronized (lock) {
+                            box[0] = (value == null) ? "null" : value;
+                            lock.notifyAll();
+                        }
+                    });
+                } catch (Throwable t) {
+                    synchronized (lock) { box[0] = null; lock.notifyAll(); }
+                }
+            });
+        } else {
+            // 反射路线：找一个两参数的 evaluateJavascript
+            task = () -> {
+                try {
+                    java.lang.reflect.Method m = null;
+                    for (java.lang.reflect.Method mm : wv.getClass().getMethods()) {
+                        if (!"evaluateJavascript".equals(mm.getName())) continue;
+                        if (mm.getParameterTypes().length != 2) continue;
+                        m = mm;
+                        break;
+                    }
+                    if (m == null) {
+                        synchronized (lock) { box[0] = null; lock.notifyAll(); }
+                        return;
+                    }
+                    final Class<?> cbType = m.getParameterTypes()[1];
+                    Object cb = java.lang.reflect.Proxy.newProxyInstance(
+                            wv.getClass().getClassLoader(),
+                            new Class<?>[]{cbType},
+                            (proxy, method, args) -> {
+                                if ("onReceiveValue".equals(method.getName())
+                                        && args != null && args.length > 0) {
+                                    synchronized (lock) {
+                                        box[0] = String.valueOf(args[0]);
+                                        lock.notifyAll();
+                                    }
+                                }
+                                return null;
+                            });
+                    m.invoke(wv, code, cb);
+                } catch (Throwable t) {
+                    synchronized (lock) { box[0] = null; lock.notifyAll(); }
+                }
+            };
+            try {
+                java.lang.reflect.Method post = null;
+                for (java.lang.reflect.Method mm : wv.getClass().getMethods()) {
+                    if ("post".equals(mm.getName())
+                            && mm.getParameterTypes().length == 1
+                            && mm.getParameterTypes()[0] == Runnable.class) {
+                        post = mm;
+                        break;
+                    }
+                }
+                if (post != null) post.invoke(wv, task);
+                else task.run();
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+
+        synchronized (lock) {
+            if (box[0] == null) {
+                try { lock.wait(Math.max(1000, timeoutMs)); } catch (Throwable ignored) {}
+            }
+        }
+        return box[0];
+    }
+
     /** 子进程告诉主进程「我在这个端口」，带重试，主进程还没起也没关系 */
     static void announcePort(final int myPort) {
         for (int i = 0; i < 8; i++) {
-            if (httpGet("http://127.0.0.1:" + MiniServer.PORT_START
-                    + "/announce?port=" + myPort) != null) {
-                log("boot", "已上报端口 " + myPort);
-                return;
+            for (int base = MiniServer.PORT_START;
+                 base < MiniServer.PORT_START + 4; base++) {
+                if (base == myPort) continue;
+                if (httpGet("http://127.0.0.1:" + base
+                        + "/announce?port=" + myPort) != null) {
+                    log("boot", "已上报端口 " + myPort + " -> " + base);
+                    return;
+                }
             }
             try { Thread.sleep(1500); } catch (Throwable ignored) {}
         }
+        log("boot", "端口 " + myPort + " 上报失败，主进程可能还没起");
     }
 
     /** 已知的其它进程端口 */
@@ -643,8 +792,19 @@ public class XhsSpy implements IXposedHookLoadPackage {
             @Override
             protected void afterHookedMethod(MethodHookParam p) {
                 try {
-                    android.app.Activity a = (android.app.Activity) p.thisObject;
-                    if (a != null) sActivity = a;
+                    final android.app.Activity a = (android.app.Activity) p.thisObject;
+                    if (a == null) return;
+                    sActivity = a;
+                    // 页面加载完才长得出 WebView，隔一会儿扫两轮 View 树
+                    for (long delay : new long[]{900L, 3500L}) {
+                        new Thread(() -> {
+                            try {
+                                Thread.sleep(delay);
+                                int n = harvestFromActivity(a);
+                                if (n > 0) log("webview", "View 树扫到 " + n + " 个 WebView");
+                            } catch (Throwable ignored) {}
+                        }, "XhsSpyHarvest").start();
+                    }
                 } catch (Throwable ignored) {}
             }
         };
