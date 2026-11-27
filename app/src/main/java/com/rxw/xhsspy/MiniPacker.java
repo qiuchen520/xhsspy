@@ -249,7 +249,7 @@ public class MiniPacker {
         File outDir = new File(ctx.getCacheDir(), "minipack");
         if (!outDir.exists() && !outDir.mkdirs()) throw new Exception("建目录失败");
         String safe = m.name == null || m.name.isEmpty() ? m.appid : m.name;
-        safe = safe.replaceAll("[\\\\/:*?\"<>|\\s]+", "_");
+        safe = safe.replaceAll("[^a-zA-Z0-9._\\u4e00-\\u9fa5-]", "_");
         String prefix = m.isTool() ? "小工具" : "小程序";
         File zip = new File(outDir, prefix + "_" + safe + "_" + m.appid + ".zip");
 
@@ -263,6 +263,67 @@ public class MiniPacker {
             try { fos.close(); } catch (Exception ignored) {}
         }
         return zip;
+    }
+
+    /** 上传用的排除清单：平台生成的、调试用的，都不该进上传包 */
+    static final String[] UPLOAD_SKIP = {
+            "mini_tool.json", "latestIdentity", "versionInfo.json",
+            ".DS_Store", "__MACOSX", "tmp"
+    };
+
+    static boolean skipOnUpload(String name) {
+        for (String k : UPLOAD_SKIP) {
+            if (name.equals(k) || name.endsWith("/" + k)) return true;
+        }
+        String low = name.toLowerCase(Locale.US);
+        return low.endsWith(".map") || low.endsWith(".pyc");
+    }
+
+    /**
+     * 打成「可以直接上传」的 zip：
+     * 根目录就是 index.html，没有 appid / hash 那两层壳，也不带平台生成的配置。
+     */
+    public static File packForUpload(Context ctx, Mini m) throws Exception {
+        File outDir = new File(ctx.getCacheDir(), "minipack");
+        if (!outDir.exists() && !outDir.mkdirs()) throw new Exception("建目录失败");
+        String safe = m.name == null || m.name.isEmpty() ? m.appid : m.name;
+        safe = safe.replaceAll("[^a-zA-Z0-9._\\u4e00-\\u9fa5-]", "_");
+        File src = new File(m.sourceDir);
+        if (!src.isDirectory()) throw new Exception("没有 source 目录");
+
+        File zip = new File(outDir, "upload_" + safe + ".zip");
+        FileOutputStream fos = new FileOutputStream(zip);
+        ZipOutputStream zos = new ZipOutputStream(fos);
+        try {
+            addDirFlat(zos, src, src, 0);
+        } finally {
+            try { zos.close(); } catch (Exception ignored) {}
+            try { fos.close(); } catch (Exception ignored) {}
+        }
+        return zip;
+    }
+
+    static void addDirFlat(ZipOutputStream zos, File root, File dir, int depth) throws Exception {
+        if (depth > 14) return;
+        File[] kids = dir.listFiles();
+        if (kids == null) return;
+        for (File f : kids) {
+            String rel = f.getAbsolutePath().substring(root.getAbsolutePath().length() + 1);
+            if (skipOnUpload(rel)) continue;
+            if (f.isDirectory()) {
+                addDirFlat(zos, root, f, depth + 1);
+                continue;
+            }
+            ZipEntry e = new ZipEntry(rel.replace('\\', '/'));
+            e.setTime(f.lastModified());
+            zos.putNextEntry(e);
+            try (FileInputStream in = new FileInputStream(f)) {
+                byte[] buf = new byte[65536];
+                int r;
+                while ((r = in.read(buf)) > 0) zos.write(buf, 0, r);
+            }
+            zos.closeEntry();
+        }
     }
 
     static void addDir(ZipOutputStream zos, File root, File dir, int depth) throws Exception {

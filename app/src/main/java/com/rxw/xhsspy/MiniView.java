@@ -78,6 +78,11 @@ public class MiniView {
             b.append("<a class=chip href=\"/tool/").append(esc(m.appid))
              .append("/\">打开预览</a>");
         }
+        if (m.isTool() && m.hasSource) {
+            String uq = "appid=" + enc(m.appid) + "&type=" + enc(m.type);
+            b.append("<a class=chip href=\"/mini/upload?").append(uq)
+             .append("\">导出可上传 zip</a>");
+        }
         String qs = "appid=" + enc(m.appid) + "&type=" + enc(m.type);
         b.append("<a class=chip href=\"/mini/pack?").append(qs)
          .append("\">下载源码 zip</a>");
@@ -104,6 +109,25 @@ public class MiniView {
             sendFile(out, zip);
         } catch (Exception e) {
             send(out, page("打包失败", "<p>" + esc(String.valueOf(e)) + "</p>"));
+        }
+    }
+
+    /** 导出「可以直接上传」的 zip：根目录就是 index.html */
+    public static void uploadZip(OutputStream out, Map<String, String> q) throws IOException {
+        MiniPacker.Mini m = MiniPacker.find(q.get("appid"), q.get("type"));
+        if (m == null || !m.isTool() || !m.hasSource) {
+            send(out, page("不支持",
+                    "<p>只有小工具才需要转上传包，而且要含 source/。</p>"
+                  + "<p><a href=\"/mini\">返回</a></p>"));
+            return;
+        }
+        try {
+            File zip = MiniPacker.packForUpload(XhsSpy.sApp, m);
+            MiniPacker.saveToDownloads(XhsSpy.sApp, zip);
+            XhsSpy.log("mini", "upload-zip " + m.appid + " -> " + zip.getAbsolutePath());
+            sendFile(out, zip);
+        } catch (Exception e) {
+            send(out, page("导出失败", "<p>" + esc(String.valueOf(e)) + "</p>"));
         }
     }
 

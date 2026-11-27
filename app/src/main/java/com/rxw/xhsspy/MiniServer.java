@@ -218,6 +218,7 @@ public class MiniServer {
             case "/tool":        MiniView.toolList(out); break;
 
             case "/mini/pack":   MiniView.pack(out, q); break;
+            case "/mini/upload": MiniView.uploadZip(out, q); break;
             case "/mini/share":  MiniView.share(out, q); break;
             case "/pageimg":     pageImageWall(out, q); break;
             case "/proxy":       proxyImage(out, q); break;
