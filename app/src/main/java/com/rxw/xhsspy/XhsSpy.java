@@ -616,6 +616,19 @@ public class XhsSpy implements IXposedHookLoadPackage {
         log("boot", "端口 " + myPort + " 上报失败，主进程可能还没起");
     }
 
+    /** 主进程启动后主动扫一遍，把已经在跑的子进程找回来（主进程重启时 sPeerPorts 是空的） */
+    static void discoverPeers() {
+        for (int p = MiniServer.PORT_START + 1;
+             p < MiniServer.PORT_START + MiniServer.PORT_TRIES; p++) {
+            String b = httpGet("http://127.0.0.1:" + p + "/ping");
+            if (b == null) continue;
+            if (b.contains("\"ok\":true")) sPeerPorts.add(p);
+        }
+        if (!sPeerPorts.isEmpty()) {
+            log("boot", "发现已有子进程端口 " + sPeerPorts);
+        }
+    }
+
     /** 已知的其它进程端口 */
     static java.util.List<Integer> peerPorts() {
         java.util.List<Integer> out;
@@ -868,6 +881,7 @@ public class XhsSpy implements IXposedHookLoadPackage {
                 log("boot", "HTTP 服务已启动: " + s.localUrl()
                         + "  lan=" + s.lanBound + "  port=" + s.port);
                 if (main) {
+                    new Thread(XhsSpy::discoverPeers, "XhsSpyDiscover").start();
                     // 监控小程序包目录，抓到新的就提示
                     MiniPacker.startWatcher(sApp);
                     // 悬浮窗
