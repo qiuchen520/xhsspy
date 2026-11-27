@@ -51,7 +51,7 @@ import org.json.JSONObject;
 public class MiniServer {
 
     public static final int PORT_START = 8686;
-    public static final int PORT_TRIES = 6;
+    public static final int PORT_TRIES = 10;
 
     private final File[] roots;
     private final String token;
@@ -240,6 +240,8 @@ public class MiniServer {
             case "/sweep":       doSweep(out, q); break;
             case "/json":        jsonDir(out, q); break;
             case "/api/status":  jsonStatus(out, q); break;
+            case "/evals":       sendJson(out, 200, XhsSpy.evalJsViaHttp(
+                                     new String(body, "UTF-8"))); break;
             case "/mcp":         handleMcp(out, body); break;
             case "/favicon.ico": sendBytes(out, 204, "text/plain", new byte[0]); break;
             default:             sendHtml(out, 404, page("404", "<p>" + esc(path) + "</p>"));
