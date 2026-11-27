@@ -25,6 +25,8 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import org.json.JSONObject;
+
 /**
  * MiniServer — 跑在小红书进程里的只读 HTTP 文件服务
  *
