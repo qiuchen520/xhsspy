@@ -237,7 +237,7 @@ public class FloatingWindow {
 
     // ------------------------------------------------------------ 胶囊
 
-    static View makeCapsule() {
+    static LinearLayout makeCapsule() {
         final LinearLayout cap = new LinearLayout(sCtx);
         cap.setOrientation(LinearLayout.HORIZONTAL);
         cap.setGravity(Gravity.CENTER_VERTICAL);
