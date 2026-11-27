@@ -71,7 +71,7 @@ public class FloatingWindow {
 
     // 胶囊尺寸 dp
     private static final int CAP_H = 44;
-    private static final int CAP_W = 126;
+    private static final int CAP_W = 156;
     // 面板目标尺寸 dp
     private static final int PANEL_W = 306;
     private static final int PANEL_H = 442;
@@ -165,8 +165,61 @@ public class FloatingWindow {
         return t;
     }
 
-    static int screenW() { return sCtx.getResources().getDisplayMetrics().widthPixels; }
-    static int screenH() { return sCtx.getResources().getDisplayMetrics().heightPixels; }
+    static int screenW() { return realW; }
+    static int screenH() { return realH; }
+
+    static int realW = 0, realH = 0;
+    static boolean sRotWatching = false;
+
+    /** 用 Display 的真实尺寸，旋转后会变。Resources 里那个不跟手。 */
+    static void refreshScreen() {
+        try {
+            WindowManager wm = (WindowManager) sCtx.getSystemService(Context.WINDOW_SERVICE);
+            android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
+            wm.getDefaultDisplay().getRealMetrics(dm);
+            realW = dm.widthPixels;
+            realH = dm.heightPixels;
+        } catch (Throwable t) {
+            realW = sCtx.getResources().getDisplayMetrics().widthPixels;
+            realH = sCtx.getResources().getDisplayMetrics().heightPixels;
+        }
+    }
+
+    /** 转屏后把窗口拽回屏幕里，别飘出去 */
+    static void clampToScreen() {
+        if (sLp == null || sRoot == null) return;
+        refreshScreen();
+        int sw = screenW(), sh = screenH();
+        int w = sLp.width, h = sLp.height;
+        sLp.x = Math.max(0, Math.min(sLp.x, Math.max(0, sw - w)));
+        sLp.y = Math.max(0, Math.min(sLp.y, Math.max(0, sh - h)));
+        try { sWm.updateViewLayout(sRoot, sLp); } catch (Throwable ignored) {}
+        if (sOpen) applySize(true);
+    }
+
+    /** 盯着屏幕旋转，转了就把位置收回来 */
+    static void startRotationWatch() {
+        if (sRotWatching) return;
+        sRotWatching = true;
+        Thread t = new Thread(() -> {
+            int last = -1;
+            while (sShown) {
+                int r = -1;
+                try {
+                    WindowManager wm = (WindowManager) sCtx.getSystemService(Context.WINDOW_SERVICE);
+                    r = wm.getDefaultDisplay().getRotation();
+                } catch (Throwable ignored) {}
+                if (r != last) {
+                    final boolean first = (last == -1);
+                    last = r;
+                    if (!first) UI.post(FloatingWindow::clampToScreen);
+                }
+                try { Thread.sleep(700); } catch (Throwable ignored) {}
+            }
+        }, "XhsSpyRot");
+        t.setDaemon(true);
+        t.start();
+    }
 
     // ------------------------------------------------------------ 挂载
 
@@ -178,6 +231,7 @@ public class FloatingWindow {
                 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                 : WindowManager.LayoutParams.TYPE_PHONE;
 
+        refreshScreen();
         sRoot = new LinearLayout(sCtx);
         sRoot.setOrientation(LinearLayout.VERTICAL);
         sRoot.setClipChildren(false);
@@ -212,6 +266,7 @@ public class FloatingWindow {
             sShown = false;
             return;
         }
+        startRotationWatch();
         log("悬浮窗已挂载");
     }
 
@@ -265,8 +320,16 @@ public class FloatingWindow {
         cap.addView(name);
 
         TextView hint = text("▾", 0x77FFFFFF, 10);
-        hint.setPadding(0, 0, dp(2), 0);
-        cap.addView(hint);
+        cap.addView(hint, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView rot = bold("⟳", 0xFFFFD6DD, 15);
+        rot.setGravity(Gravity.CENTER);
+        rot.setPadding(dp(6), dp(3), dp(6), dp(3));
+        rot.setBackground(round(0x22FF6B85, 8));
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                dp(26), dp(26));
+        cap.addView(rot, rlp);
 
         // 整个胶囊接手势：拖动 = 移动窗口，轻点 = 头像切面板 / 文字跳网页
         cap.setOnTouchListener(new View.OnTouchListener() {
@@ -312,7 +375,17 @@ public class FloatingWindow {
                             openUrl("/");
                             return true;
                         }
-                        // 轻点一律展开 / 收起，不看点在哪，手指没那么准
+                        float lx = e.getX();
+                        float cw = v.getWidth();
+                        if (lx > cw - dp(34)) {
+                            // 右边那一小块是转屏
+                            String r = XhsSpy.rotate("toggle");
+                            if (r.contains("error")) {
+                                MiniPacker.toast(sCtx, "转不了屏：" + r);
+                            }
+                            return true;
+                        }
+                        // 其余位置轻点一律展开 / 收起
                         toggle();
                         return true;
                     }
@@ -652,6 +725,15 @@ public class FloatingWindow {
         }
         sContent.addView(filters);
 
+        // 执行 JS：闭包里的状态靠这个改
+        TextView jsBtn = chip("执行 JS", 0x2E8B5CF6, 0xFFDDD0FF, FloatingWindow::promptJs);
+        LinearLayout.LayoutParams jlp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        jlp.bottomMargin = dp(7);
+        jsBtn.setLayoutParams(jlp);
+        sContent.addView(jsBtn);
+
         // 列表容器
         sVarList = new LinearLayout(sCtx);
         sVarList.setOrientation(LinearLayout.VERTICAL);
@@ -873,6 +955,69 @@ public class FloatingWindow {
         return ed;
     }
 
+    /** 一个能跑任意 JS 的小控制台，游戏里的闭包状态就靠这个 */
+    static void promptJs() {
+        if (sContent == null) return;
+        LinearLayout box = new LinearLayout(sCtx);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(8), dp(6), dp(8), dp(8));
+        box.setBackground(glass(0x18FFFFFF, 10, 0x22FFFFFF));
+
+        final EditText code = new EditText(sCtx);
+        code.setTextColor(C_TEXT);
+        code.setTextSize(11);
+        code.setHint("比如 G.set.quality = 'low'");
+        code.setHintTextColor(0x4DFFFFFF);
+        code.setSingleLine(false);
+        code.setMinLines(3);
+        code.setBackground(glass(0x14FFFFFF, 8, 0x1FFFFFFF));
+        code.setPadding(dp(8), dp(6), dp(8), dp(6));
+        code.setTypeface(Typeface.MONOSPACE);
+        code.setOnFocusChangeListener((v, has) -> setImeMode(has));
+        box.addView(code, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(88)));
+
+        final TextView result = text("", 0xCCFFFFFF, 10);
+        result.setPadding(0, dp(5), 0, 0);
+        result.setTextIsSelectable(true);
+        box.addView(result);
+
+        LinearLayout acts = new LinearLayout(sCtx);
+        acts.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        alp.topMargin = dp(7);
+        acts.setLayoutParams(alp);
+
+        acts.addView(chip("运行", 0x338B5CF6, 0xFFE0D4FF, () -> {
+            final String src = code.getText().toString().trim();
+            if (src.isEmpty()) return;
+            result.setText("运行中…");
+            new Thread(() -> {
+                final JSONObject r = VarsPanel.evalJs(src);
+                UI.post(() -> {
+                    if (r.optBoolean("ok", false)) {
+                        String v = r.optString("now", "");
+                        if (v.isEmpty()) v = r.optString("_raw", "undefined");
+                        result.setText("→ " + v);
+                    } else {
+                        result.setText("× " + r.optString("err", "执行失败"));
+                    }
+                });
+            }, "XhsSpyJs").start();
+        }));
+        acts.addView(chip("关掉", 0x12FFFFFF, 0x99FFFFFF, () -> {
+            setImeMode(false);
+            sContent.removeView(box);
+        }));
+        box.addView(acts);
+
+        sContent.addView(box, 0);
+        setImeMode(true);
+        try { code.requestFocus(); } catch (Throwable ignored) {}
+    }
+
     /** 输入框拿到焦点才放开 window 的 NOT_FOCUSABLE，否则键盘弹不出来 */
     static void setImeMode(boolean on) {
         if (sLp == null || sWm == null || sRoot == null) return;
@@ -1083,6 +1228,19 @@ public class FloatingWindow {
             sContent.addView(chip("刷新", 0x12FFFFFF, 0x99FFFFFF, FloatingWindow::refresh));
         } catch (Throwable t) {
             sContent.addView(row("读不到：" + t, 0xFFFF6B6B, 11));
+        }
+
+        // WebView 情况：能不能跑 JS 一眼看出来
+        try {
+            sContent.addView(head("WebView"));
+            TextView wv = text(XhsSpy.webViewReportAll(), 0xC8FFFFFF, 9);
+            wv.setTypeface(Typeface.MONOSPACE);
+            wv.setTextIsSelectable(true);
+            wv.setPadding(dp(7), dp(6), dp(7), dp(6));
+            wv.setBackground(round(0x14FFFFFF, 8));
+            sContent.addView(wv);
+        } catch (Throwable t) {
+            sContent.addView(row("查不到：" + t, 0xFFFF6B6B, 10));
         }
     }
 
