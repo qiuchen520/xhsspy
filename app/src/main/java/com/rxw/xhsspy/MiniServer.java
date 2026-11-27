@@ -216,6 +216,12 @@ public class MiniServer {
             case "/img":         imageWall(out, q); break;
             case "/mini":        MiniView.listPage(out); break;
             case "/tool":        MiniView.toolList(out); break;
+            case "/vars":        VarsPanel.page(out); break;
+            case "/vars/api/list": sendJson(out, 200, VarsPanel.snapshot().toString()); break;
+            case "/vars/api/mem": sendJson(out, 200, VarsPanel.mem().toString()); break;
+            case "/vars/api/set": varsSet(out, body); break;
+            case "/vars/api/del": varsDel(out, body); break;
+            case "/vars/api/eval": varsEval(out, body); break;
 
             case "/mini/pack":   MiniView.pack(out, q); break;
             case "/mini/upload": MiniView.uploadZip(out, q); break;
@@ -238,6 +244,43 @@ public class MiniServer {
         }
     }
 
+    // ------------------------------------------------------------ 表单 / 数值修改
+
+    static Map<String, String> parseForm(byte[] body) {
+        Map<String, String> m = new java.util.LinkedHashMap<>();
+        if (body == null || body.length == 0) return m;
+        try {
+            String str = new String(body, "UTF-8");
+            for (String kv : str.split("&")) {
+                if (kv.isEmpty()) continue;
+                int i = kv.indexOf('=');
+                try {
+                    if (i < 0) m.put(java.net.URLDecoder.decode(kv, "UTF-8"), "");
+                    else m.put(java.net.URLDecoder.decode(kv.substring(0, i), "UTF-8"),
+                               java.net.URLDecoder.decode(kv.substring(i + 1), "UTF-8"));
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception ignored) {}
+        return m;
+    }
+
+    private void varsSet(OutputStream out, byte[] body) throws IOException {
+        Map<String, String> f = parseForm(body);
+        JSONObject r = VarsPanel.set(f.get("scope"), f.get("k"),
+                f.get("v"), f.get("type"));
+        sendJson(out, 200, r.toString());
+    }
+
+    private void varsDel(OutputStream out, byte[] body) throws IOException {
+        Map<String, String> f = parseForm(body);
+        sendJson(out, 200, VarsPanel.del(f.get("k")).toString());
+    }
+
+    private void varsEval(OutputStream out, byte[] body) throws IOException {
+        Map<String, String> f = parseForm(body);
+        sendJson(out, 200, VarsPanel.evalJs(f.get("code")).toString());
+    }
+
     // ------------------------------------------------------------ 页面
 
     private void home(OutputStream out, Map<String, String> q) throws IOException {
@@ -245,6 +288,7 @@ public class MiniServer {
         b.append("<div class=grid>");
         b.append(card("/mini?" + k(q), "★ 小程序源码", "已抓到的包，一键导出 zip"));
         b.append(card("/wall?" + k(q), "掘金壁纸", "壁纸站，能直接看图下原图"));
+        b.append(card("/vars?" + k(q), "运行时数值", "改页面变量和 localStorage"));
         b.append(card("/pageimg?" + k(q), "页面实时图片", "小工具里刷出来的图，自动收集"));
         b.append(card("/img?" + k(q) + "&src=pkg", "包内图片", "小工具 zip 里的素材"));
         b.append(card("/img?" + k(q) + "&src=all", "全部图片", "含缓存，噪声多"));
@@ -776,6 +820,22 @@ public class MiniServer {
         arr.put(tool("fetch_text", "用小红书进程的网络身份下载一个 URL，返回文本（接口 JSON、JS 等）。",
                 prop("url", "string", "完整 URL"),
                 "url"));
+        arr.put(tool("js_vars", "列出当前页面 window 上的全局变量和 localStorage，"
+                        + "带类型和当前值。改数值之前先用它看现在是什么。"));
+        arr.put(tool("js_set", "修改当前页面的一个数值。scope=window 改全局变量，"
+                        + "scope=storage 改 localStorage。",
+                prop("key", "string", "变量名"),
+                prop("value", "string", "新值"),
+                prop("scope", "string", "window 或 storage，默认 window"),
+                prop("type", "string", "auto / number / string / boolean，默认 auto"),
+                "key", "value"));
+        arr.put(tool("js_eval", "在页面里执行一段 JavaScript 并返回结果。"
+                        + "用来改复杂状态、调页面内部函数。",
+                prop("code", "string", "要执行的 JS 代码"),
+                "code"));
+        arr.put(tool("process_mem", "查看当前进程的内存占用：已分配 / 已用 / 上限 / 百分比。"));
+        arr.put(tool("roots", "列出本服务允许访问的根目录。"));
+
         return arr;
     }
 
@@ -844,6 +904,12 @@ public class MiniServer {
                                    return text("已触发扫描，稍后调用 packages 查看结果。");
                 case "packages":   return text(toolPackages());
                 case "roots":      return text(toolRoots());
+                case "js_vars":    return text(VarsPanel.snapshot().toString());
+                case "js_set":     return text(VarsPanel.set(a.optString("scope", "window"),
+                                            a.optString("key", ""), a.optString("value", ""),
+                                            a.optString("type", "auto")).toString());
+                case "js_eval":    return text(VarsPanel.evalJs(a.optString("code", "")).toString());
+                case "process_mem":return text(VarsPanel.mem().toString());
                 case "page_images":return text(XhsSpy.collectPageImages());
                 case "fetch_image":return toolFetch(a.optString("url", ""), true);
                 case "fetch_text": return toolFetch(a.optString("url", ""), false);

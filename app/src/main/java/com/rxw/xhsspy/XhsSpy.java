@@ -290,6 +290,89 @@ public class XhsSpy implements IXposedHookLoadPackage {
         sPageImgs.clear();
     }
 
+    /** 在第一个可用的 WebView 上执行一段 JS，返回结果字符串（已解一层 JSON 转义） */
+    public static String evalJs(String code, long timeoutMs) {
+        java.util.List<Object> snapshot;
+        synchronized (sWebViews) { snapshot = new java.util.ArrayList<>(sWebViews); }
+        if (snapshot.isEmpty()) return null;
+        for (Object wv : snapshot) {
+            if (!(wv instanceof android.webkit.WebView)) continue;
+            final android.webkit.WebView web = (android.webkit.WebView) wv;
+            final Object lock = new Object();
+            final String[] box = new String[]{null};
+            try {
+                web.post(() -> {
+                    try {
+                        web.evaluateJavascript(code, value -> {
+                            synchronized (lock) {
+                                box[0] = value == null ? "null" : value;
+                                lock.notifyAll();
+                            }
+                        });
+                    } catch (Throwable t) {
+                        synchronized (lock) { box[0] = null; lock.notifyAll(); }
+                    }
+                });
+                synchronized (lock) {
+                    if (box[0] == null) lock.wait(Math.max(1000, timeoutMs));
+                }
+            } catch (Throwable ignored) {}
+            if (box[0] == null) continue;
+            String v = box[0];
+            try {
+                Object o = new org.json.JSONTokener(v).nextValue();
+                if (o == org.json.JSONObject.NULL) return "null";
+                return String.valueOf(o);
+            } catch (Throwable t) {
+                return v;
+            }
+        }
+        return null;
+    }
+
+    /** 页面变量 + localStorage 的快照（JS 侧枚举，结果是一段 JSON） */
+    public static final String VAR_PROBE_JS =
+            "(function(){try{"
+          + "var skip={window:1,document:1,location:1,navigator:1,top:1,parent:1,self:1,frameElement:1,"
+          + "localStorage:1,sessionStorage:1,indexedDB:1,caches:1,crypto:1,performance:1,"
+          + "history:1,screen:1,frames:1,customElements:1,visualViewport:1,"
+          + "speechSynthesis:1,webkitStorageInfo:1,scheduler:1,chrome:1};"
+          + "var out=[];"
+          + "for(var k in window){"
+          + "  if(skip[k])continue;"
+          + "  try{"
+          + "    var v=window[k],t=typeof v;"
+          + "    if(t==='function'){out.push({k:k,t:'function',v:'(函数)',w:false});continue;}"
+          + "    if(v===null){out.push({k:k,t:'null',v:'null',w:true});continue;}"
+          + "    if(t==='object'){"
+          + "      var tag=Object.prototype.toString.call(v);"
+          + "      var n=-1;try{if(typeof v.length==='number')n=v.length;}catch(e){}"
+          + "      var arr=Array.isArray(v);"
+          + "      out.push({k:k,t:arr?'数组':'对象',v:tag+(n>=0?(' 长度'+n):''),w:false});"
+          + "      continue;}"
+          + "    if(t==='number'||t==='string'||t==='boolean'){"
+          + "      var s=String(v);"
+          + "      if(s.length>300)s=s.slice(0,300)+'…';"
+          + "      out.push({k:k,t:t==='number'?'数字':(t==='string'?'文本':'布尔'),v:s,w:true});}"
+          + "  }catch(e){}"
+          + "}"
+          + "var ls=[];"
+          + "try{for(var i=0;i<localStorage.length;i++){"
+          + "  var key=localStorage.key(i);var val=localStorage.getItem(key);"
+          + "  if(val&&val.length>400)val=val.slice(0,400)+'…';"
+          + "  ls.push({k:key,v:val});}}catch(e){}"
+          + "out.sort(function(a,b){return a.w===b.w?0:(a.w?-1:1);});"
+          + "return JSON.stringify({title:document.title,url:location.href,vars:out,storage:ls});"
+          + "}catch(e){return JSON.stringify({error:String(e)});}})()";
+
+    public static String probeVars() {
+        String r = evalJs(VAR_PROBE_JS, 5000);
+        if (r == null) {
+            return "{\"error\":\"没有可用的 WebView。先在 App 里打开一个小工具或页面。\"}";
+        }
+        return r;
+    }
+
     /** 每 5 秒问一次页面有没有新图，有就攒起来。这样不打 MCP 也能在网页上看到。 */
     static void startImagePoller() {
         if (sPolling) return;
