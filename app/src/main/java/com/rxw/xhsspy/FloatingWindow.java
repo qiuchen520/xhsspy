@@ -261,8 +261,12 @@ public class FloatingWindow {
 
         // 名字
         TextView name = bold("xhs", C_TEXT, 13);
-        name.setPadding(dp(9), 0, dp(4), 0);
+        name.setPadding(dp(9), 0, dp(2), 0);
         cap.addView(name);
+
+        TextView hint = text("▾", 0x77FFFFFF, 10);
+        hint.setPadding(0, 0, dp(2), 0);
+        cap.addView(hint);
 
         // 整个胶囊接手势：拖动 = 移动窗口，轻点 = 头像切面板 / 文字跳网页
         cap.setOnTouchListener(new View.OnTouchListener() {
@@ -302,10 +306,14 @@ public class FloatingWindow {
                             return true;
                         }
                         if (e.getActionMasked() == MotionEvent.ACTION_CANCEL) return true;
-                        if (System.currentTimeMillis() - downAt > 900) { toggle(); return true; }
-                        float lx = e.getX();
-                        if (lx < dp(46)) toggle();
-                        else openUrl("/");
+                        long held = System.currentTimeMillis() - downAt;
+                        if (held > 700) {
+                            // 长按才跳网页
+                            openUrl("/");
+                            return true;
+                        }
+                        // 轻点一律展开 / 收起，不看点在哪，手指没那么准
+                        toggle();
                         return true;
                     }
                 }
@@ -322,6 +330,7 @@ public class FloatingWindow {
     static void openPanel() {
         if (sPanel == null || sOpen) return;
         sOpen = true;
+        sPanel.animate().cancel();
         applySize(true);
         sPanel.setVisibility(View.VISIBLE);
         sPanel.setPivotX(dp(26));
@@ -343,6 +352,7 @@ public class FloatingWindow {
     static void closePanel() {
         if (sPanel == null || !sOpen) return;
         sOpen = false;
+        sPanel.animate().cancel();
         setImeMode(false);
         sCapsule.animate().alpha(1f).setDuration(160).start();
         sPanel.animate()
@@ -350,7 +360,7 @@ public class FloatingWindow {
                 .setDuration(200)
                 .setInterpolator(new DecelerateInterpolator(1.6f))
                 .withEndAction(() -> {
-                    if (sPanel == null) return;
+                    if (sPanel == null || sOpen) return;   // 中途又被点开了，不藏
                     sPanel.setVisibility(View.GONE);
                     applySize(false);
                 })
