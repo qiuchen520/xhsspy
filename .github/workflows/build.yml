@@ -71,6 +71,11 @@ jobs:
           find . -path ./_src -prune -o -name "*.apk" -print -exec cp {} out/XhsSpy.apk \;
           ls -la out
 
+      # 把签名证书指纹打出来，方便确认每次都是同一张证书
+      - name: Print APK certificate
+        run: |
+          keytool -printcert -jarfile out/XhsSpy.apk | grep -E "Owner|Valid|SHA256" | head -6
+
       - name: Upload as workflow artifact
         uses: actions/upload-artifact@v4
         with:
