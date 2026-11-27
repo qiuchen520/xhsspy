@@ -443,6 +443,10 @@ public class XhsSpy implements IXposedHookLoadPackage {
                         + "  lan=" + s.lanBound + "  port=" + s.port);
                 // 监控小程序包目录，抓到新的就提示
                 MiniPacker.startWatcher(sApp);
+                // 悬浮窗
+                if (!"0".equals(System.getenv("XHSSPY_NO_FLOAT"))) {
+                    FloatingWindow.show(sApp);
+                }
             } else {
                 log("crash", "HTTP 服务启动失败（端口全占用）");
             }
