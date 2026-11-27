@@ -358,6 +358,8 @@ public class XhsSpy implements IXposedHookLoadPackage {
                 sServer = s;
                 log("boot", "HTTP 服务已启动: " + s.localUrl()
                         + "  lan=" + s.lanBound + "  port=" + s.port);
+                // 监控小程序包目录，抓到新的就提示
+                MiniPacker.startWatcher(sApp);
             } else {
                 log("crash", "HTTP 服务启动失败（端口全占用）");
             }

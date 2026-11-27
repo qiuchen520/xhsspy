@@ -209,6 +209,10 @@ public class MiniServer {
             case "/ls":          listDir(out, q); break;
             case "/get":         getFile(out, q); break;
             case "/img":         imageWall(out, q); break;
+            case "/mini":        miniPage(out, q); break;
+            case "/mini/api/list": miniList(out); break;
+            case "/mini/pack":   miniPack(out, q); break;
+            case "/mini/share":  miniShare(out, q); break;
             case "/pageimg":     pageImageWall(out, q); break;
             case "/proxy":       proxyImage(out, q); break;
             case "/clearimg":    XhsSpy.clearPageImages();
@@ -232,7 +236,8 @@ public class MiniServer {
     private void home(OutputStream out, Map<String, String> q) throws IOException {
         StringBuilder b = new StringBuilder();
         b.append("<div class=grid>");
-        b.append(card("/wall?" + k(q), "★ 掘金壁纸", "壁纸站，能直接看图下原图"));
+        b.append(card("/mini?" + k(q), "★ 小程序源码", "已抓到的包，一键导出 zip"));
+        b.append(card("/wall?" + k(q), "掘金壁纸", "壁纸站，能直接看图下原图"));
         b.append(card("/pageimg?" + k(q), "页面实时图片", "小工具里刷出来的图，自动收集"));
         b.append(card("/img?" + k(q) + "&src=pkg", "包内图片", "小工具 zip 里的素材"));
         b.append(card("/img?" + k(q) + "&src=all", "全部图片", "含缓存，噪声多"));
@@ -424,6 +429,94 @@ public class MiniServer {
         b.append("<p class=hint>如果大量图显示成半透明，说明 CDN 拒绝了代理请求，"
                 + "把链接复制到浏览器直接打开可能更好。</p>");
         sendHtml(out, 200, page("页面实时图片", b.toString()));
+    }
+
+    /** 小程序源码列表页 */
+    private void miniPage(OutputStream out, Map<String, String> q) throws IOException {
+        List<MiniPacker.Mini> list = MiniPacker.list();
+        StringBuilder b = new StringBuilder();
+        b.append("<p class=hint>共 <b>").append(list.size())
+         .append("</b> 个小程序。点「下载源码」拿 zip，点「分享」直接弹系统分享面板。</p>");
+        if (list.isEmpty()) {
+            b.append("<p>还没抓到。<br>进小红书打开任意小程序，玩十几秒，回来刷新。<br>"
+                    + "源码落在 <code>" + MiniPacker.BASE.getAbsolutePath() + "</code></p>");
+        }
+        for (MiniPacker.Mini m : list) {
+            String name = m.name == null || m.name.isEmpty() ? m.appid : m.name;
+            b.append("<div class=listitem>");
+            b.append("<div class=li-h><b>").append(esc(name)).append("</b>");
+            b.append("<span class=dim>").append(esc(m.version)).append("</span></div>");
+            b.append("<div class=li-d">").append(esc(m.appid))
+             .append(" · ").append(human(m.bytes))
+             .append(" · ").append(m.files).append(" 个文件");
+            if (m.hasSource) b.append(" · <span class=ok>含 source/</span>");
+            else b.append(" · <span class=bad>无 source/</span>");
+            b.append("</div><div class=li-a>");
+            b.append("<a class=chip href=\"/mini/pack?").append(k(q))
+             .append("&appid=").append(enc(m.appid)).append("\">下载源码 zip</a>");
+            b.append("<a class=chip href=\"/mini/share?").append(k(q))
+             .append("&appid=").append(enc(m.appid)).append("\">打包并分享</a>");
+            b.append("<a class=chip href=\"/ls?").append(k(q))
+             .append("&p=").append(enc(m.path)).append("\">浏览目录</a>");
+            b.append("</div></div>");
+        }
+        b.append(BASE_INFO);
+        sendHtml(out, 200, page("小程序源码", b.toString()));
+    }
+
+    static final String BASE_INFO =
+            "<h2>源码在哪</h2><pre class=log>/data/data/com.xingin.xhs/files/redmpV2/release/"
+          + "&lt;appid&gt;/&lt;hash&gt;/source/\n"
+          + "  ├── app.json        路由表\n"
+          + "  ├── service.js      业务逻辑\n"
+          + "  ├── pages/*/       各页面的 .render.js + .css\n"
+          + "  ├── components.js\n"
+          + "  └── project.config.json</pre>"
+          + "<p class=hint>打包出来的 zip 里是 <code>&lt;appid&gt;/&lt;hash&gt;/</code> 整个目录，"
+          + "源码在 <code>source/</code> 子目录。zip 同时会存一份到手机「下载/XhsSpy」。</p>";
+
+    private void miniList(OutputStream out) throws IOException {
+        org.json.JSONArray arr = new org.json.JSONArray();
+        for (MiniPacker.Mini m : MiniPacker.list()) arr.put(m.toJson());
+        sendJson(out, 200, arr.toString());
+    }
+
+    private MiniPacker.Mini findByAppid(String appid) {
+        for (MiniPacker.Mini m : MiniPacker.list()) {
+            if (m.appid.equals(appid)) return m;
+        }
+        return null;
+    }
+
+    private void miniPack(OutputStream out, Map<String, String> q) throws IOException {
+        String appid = q.get("appid");
+        MiniPacker.Mini m = findByAppid(appid);
+        if (m == null) {
+            sendHtml(out, 404, page("找不到", "<p>没有这个 appid：" + esc(String.valueOf(appid)) + "</p>"));
+            return;
+        }
+        try {
+            File zip = MiniPacker.pack(XhsSpy.sApp, m);
+            MiniPacker.saveToDownloads(XhsSpy.sApp, zip);
+            XhsSpy.log("mini", "packed " + m.appid + " -> " + zip.getAbsolutePath()
+                    + " (" + MiniPacker.human(zip.length()) + ")");
+            sendFile(out, zip);
+        } catch (Exception e) {
+            sendHtml(out, 500, page("打包失败", "<p>" + esc(String.valueOf(e)) + "</p>"));
+        }
+    }
+
+    private void miniShare(OutputStream out, Map<String, String> q) throws IOException {
+        String appid = q.get("appid");
+        MiniPacker.Mini m = findByAppid(appid);
+        if (m == null) {
+            sendHtml(out, 404, page("找不到", "<p>没有这个 appid</p>"));
+            return;
+        }
+        String r = MiniPacker.packAndShare(XhsSpy.sApp, m, true);
+        sendHtml(out, 200, page("已分享",
+                "<p>" + esc(r) + "</p><p><a href=\"/mini\">返回</a></p>"
+                + "<meta http-equiv=refresh content=\"1;url=/mini\">"));
     }
 
     /** 代下载网络图片，带上小工具需要的 Referer */
@@ -1632,6 +1725,13 @@ public class MiniServer {
                 + "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#4a4a52}"
                 + ".thumb i{position:absolute;top:4px;right:4px;background:rgba(0,0,0,.6);"
                 + "color:#fff;font-size:10px;padding:1px 5px;border-radius:6px;font-style:normal}"
+                + ".listitem{background:#fff;border-radius:14px;padding:14px;margin-bottom:10px;"
+                + "box-shadow:0 2px 10px rgba(0,0,0,.06)}"
+                + ".li-h{display:flex;align-items:center;gap:8px}"
+                + ".li-h b{font-size:15px;color:#1f1f22}"
+                + ".li-d{font-size:11px;color:#8a8a95;margin:5px 0 10px;word-break:break-all}"
+                + ".li-a{display:flex;flex-wrap:wrap;gap:8px}"
+                + ".li-a .chip{box-shadow:none;background:#f2f2f5}"
                 + "</style><h1>" + esc(title) + "</h1>" + body + "</html>";
     }
 }
