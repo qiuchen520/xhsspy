@@ -260,7 +260,7 @@ public class VarsPanel {
                 String k = v.optString("k");
                 String val = v.optString("v");
                 b.append("<tr><td><code>").append(MiniView.esc(k)).append("</code></td>")
-                 .append("<td class=dim style=\"max-width:200px;overflow:hidden;"
+                 .append("<td class=dim style=\"max-width:200px;overflow:hidden;")
                  .append("text-overflow:ellipsis\">")
                  .append(MiniView.esc(val)).append("</td><td>");
                 b.append("<a class=chip href=\"#\" onclick=\"editLs('")
