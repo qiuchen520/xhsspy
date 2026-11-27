@@ -46,12 +46,22 @@ public class FloatingWindow {
 
     public static void show(final Context ctx) {
         if (ctx == null || sShown) return;
-        sCtx = ctx.getApplicationContext();
+        Context app = null;
+        try { app = ctx.getApplicationContext(); } catch (Throwable ignored) {}
+        sCtx = (app != null) ? app : ctx;
         sShown = true;
+        log("show 开始, ctx=" + (sCtx == null ? "null" : sCtx.getClass().getName()));
         UI.post(() -> {
             try {
-                if (!Settings.canDrawOverlays(sCtx)) {
-                    log("没有悬浮窗权限，引导授权");
+                boolean ok = false;
+                try {
+                    ok = Settings.canDrawOverlays(sCtx);
+                } catch (Throwable t) {
+                    log("canDrawOverlays 异常: " + t);
+                }
+                log("canDrawOverlays = " + ok);
+                if (!ok) {
+                    log("没有悬浮窗权限，引导授权 + 启用 App 内注入");
                     requestPermission();
                     return;
                 }
@@ -94,6 +104,52 @@ public class FloatingWindow {
             } catch (Throwable ignored) {}
             MiniPacker.toast(sCtx, "请手动到 设置 → 应用 → 小红书 → 显示在其他应用上层 里打开");
         }
+    }
+
+    // ------------------------------------------------------------ Activity 内注入（不需要 OVERLAY 权限）
+
+    static final java.util.Set<Integer> sHookedActs =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<Integer>());
+
+    /** 直接把球塞进小红书自己的窗口里，只在 App 前台可见，但不需要任何权限 */
+    public static void attachToActivity(final android.app.Activity a) {
+        if (a == null || sCtx == null) return;
+        final int key = System.identityHashCode(a);
+        if (sHookedActs.contains(key)) return;
+        sHookedActs.add(key);
+        UI.post(() -> {
+            try {
+                android.view.ViewGroup root =
+                        (android.view.ViewGroup) a.findViewById(android.R.id.content);
+                if (root == null) return;
+                if (root.findViewWithTag("xhsspy_ball") != null) return;
+
+                android.widget.FrameLayout wrap = new android.widget.FrameLayout(a);
+                wrap.setTag("xhsspy_wrap");
+                wrap.setClipChildren(false);
+
+                View ball = makeBall();
+                ball.setTag("xhsspy_ball");
+                android.widget.FrameLayout.LayoutParams lp =
+                        new android.widget.FrameLayout.LayoutParams(dp(50), dp(50));
+                lp.gravity = Gravity.TOP | Gravity.START;
+                lp.leftMargin = dp(6);
+                lp.topMargin = dp(200);
+                wrap.addView(ball, lp);
+
+                root.addView(wrap, new android.widget.FrameLayout.LayoutParams(
+                        android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                        android.widget.FrameLayout.LayoutParams.MATCH_PARENT));
+
+                // 球点击 = 开首页；长按 = 开 /mini
+                ball.setOnClickListener(x -> openUrl("/"));
+                ball.setOnLongClickListener(x -> { openUrl("/mini"); return true; });
+
+                log("已注入 Activity: " + a.getClass().getName());
+            } catch (Throwable t) {
+                log("注入 Activity 失败: " + t);
+            }
+        });
     }
 
     // ------------------------------------------------------------ 挂载
