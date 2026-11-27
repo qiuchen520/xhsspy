@@ -19,49 +19,62 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
-import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * MiniPacker — 小程序源码抓取 / 打包 / 分享
+ * MiniPacker — 小程序 / 小工具 源码抓取、打包、托管
  *
- * 小红书的小程序包落在：
- *   /data/data/com.xingin.xhs/files/redmpV2/release/<appid>/<hash>/
- *       ├── source/          ← 全部源码（app.json / service.js / pages/…）
- *       ├── icon.jpg
- *       └── versionInfo.json
+ * 小红书里其实有两套东西，目录也不一样：
  *
- * 这里干三件事：
- *   1. 扫出所有已缓存的小程序，报出名字 / appid / 体积
- *   2. 把某个 appid 的整个目录打成 zip
- *   3. 把 zip 落到手机「下载」目录，并弹系统分享
+ *   小程序  /data/data/com.xingin.xhs/files/redmpV2/release/<appid>/<hash>/source/
+ *           app.json + service.js + pages/*.render.js   （自研框架，JS 渲染）
+ *
+ *   小工具  /data/data/com.xingin.xhs/files/mini_tool/release/<appid>/<hash>/source/
+ *           index.html + assets/app.js + assets/style.css   （纯 H5，能直接跑）
+ *
+ * 两套都是明文的，直接能读。
  */
 public class MiniPacker {
 
-    public static final File BASE =
+    public static final File BASE_APP =
             new File("/data/data/com.xingin.xhs/files/redmpV2/release");
+    public static final File BASE_TOOL =
+            new File("/data/data/com.xingin.xhs/files/mini_tool/release");
+
+    /** 兼容旧代码 */
+    public static final File BASE = BASE_APP;
+
+    public static final String TYPE_APP = "app";
+    public static final String TYPE_TOOL = "tool";
 
     public static class Mini {
+        public String type = TYPE_APP;
         public String appid = "";
         public String name = "";
         public String version = "";
         public String hashDir = "";
+        public String sourceDir = "";
         public long bytes = 0;
         public int files = 0;
         public boolean hasSource = false;
         public long mtime = 0;
         public String path = "";
 
+        public boolean isTool() {
+            return TYPE_TOOL.equals(type);
+        }
+
         public JSONObject toJson() {
             JSONObject o = new JSONObject();
             try {
+                o.put("type", type);
                 o.put("appid", appid);
                 o.put("name", name);
                 o.put("version", version);
@@ -69,13 +82,10 @@ public class MiniPacker {
                 o.put("files", files);
                 o.put("hasSource", hasSource);
                 o.put("path", path);
+                o.put("sourceDir", sourceDir);
                 o.put("mtime", mtime);
             } catch (Exception ignored) {}
             return o;
-        }
-
-        public String sizeText() {
-            return human(bytes);
         }
     }
 
@@ -90,42 +100,59 @@ public class MiniPacker {
 
     public static List<Mini> list() {
         List<Mini> out = new ArrayList<>();
-        File[] kids = BASE.listFiles();
-        if (kids == null) return out;
-        Arrays.sort(kids, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
-        for (File d : kids) {
-            if (!d.isDirectory()) continue;
-            Mini m = read(d);
-            if (m != null) out.add(m);
-        }
+        scanRoot(BASE_APP, TYPE_APP, out);
+        scanRoot(BASE_TOOL, TYPE_TOOL, out);
+        out.sort((a, b) -> Long.compare(b.mtime, a.mtime));
         return out;
     }
 
-    public static Mini read(File appDir) {
+    public static List<Mini> listByType(String type) {
+        List<Mini> out = new ArrayList<>();
+        for (Mini m : list()) if (m.type.equals(type)) out.add(m);
+        return out;
+    }
+
+    static void scanRoot(File base, String type, List<Mini> out) {
+        File[] kids = base.listFiles();
+        if (kids == null) return;
+        for (File d : kids) {
+            if (!d.isDirectory()) continue;
+            Mini m = read(d, type);
+            if (m != null) out.add(m);
+        }
+    }
+
+    public static Mini read(File appDir, String type) {
         if (appDir == null || !appDir.isDirectory()) return null;
         Mini m = new Mini();
+        m.type = type;
         m.appid = appDir.getName();
         m.path = appDir.getAbsolutePath();
         m.mtime = appDir.lastModified();
 
-        // 取最新的一个 hash 子目录
         File[] subs = appDir.listFiles();
         File newest = null;
         if (subs != null) {
             for (File s : subs) {
-                if (!s.isDirectory() || "usr".equals(s.getName())) continue;
+                if (!s.isDirectory()) continue;
+                String n = s.getName();
+                if ("usr".equals(n) || "tmp".equals(n)) continue;
                 if (newest == null || s.lastModified() > newest.lastModified()) newest = s;
             }
         }
         if (newest == null) return null;
         m.hashDir = newest.getName();
+        m.sourceDir = new File(newest, "source").getAbsolutePath();
+        m.hasSource = new File(newest, "source").isDirectory();
 
-        File src = new File(newest, "source");
-        m.hasSource = src.isDirectory();
-
-        // 名字：project.config.json 的 projectname，退到 versionInfo.json
-        m.name = readProjectName(src, m.appid);
-        m.version = readVersion(src);
+        if (m.hasSource) {
+            m.name = TYPE_TOOL.equals(type)
+                    ? readToolName(new File(m.sourceDir), m.appid)
+                    : readAppName(new File(m.sourceDir), m.appid);
+            m.version = readVersion(new File(m.sourceDir));
+        } else {
+            m.name = m.appid;
+        }
 
         long[] acc = new long[]{0, 0};
         count(newest, acc, 0);
@@ -146,7 +173,41 @@ public class MiniPacker {
         }
     }
 
-    static String readProjectName(File src, String fallback) {
+    // --- 名字解析 ---
+
+    static final Pattern TITLE = Pattern.compile(
+            "<title[^>]*>(.*?)</title>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+
+    /** 小工具：从 index.html 的 <title> 里取 */
+    static String readToolName(File src, String fallback) {
+        File idx = new File(src, "index.html");
+        if (idx.isFile()) {
+            String t = readText(idx, 65536);
+            Matcher mm = TITLE.matcher(t);
+            if (mm.find()) {
+                String n = mm.group(1).trim();
+                if (n.isEmpty()) n = charSet(t, "charset=utf-8");
+                if (n != null && !n.isEmpty()) return n;
+            }
+        }
+        // 退到 mini_tool.json
+        File j = new File(src, "mini_tool.json");
+        if (j.isFile()) {
+            try {
+                JSONObject o = new JSONObject(readText(j, 8192));
+                String n = o.optString("name", "");
+                if (!n.isEmpty()) return n;
+            } catch (Throwable ignored) {}
+        }
+        return fallback;
+    }
+
+    static String charSet(String html, String key) {
+        return null;
+    }
+
+    /** 小程序：从 project.config.json 的 projectname 里取，去掉尾部 appid */
+    static String readAppName(File src, String fallback) {
         try {
             File pj = new File(src, "project.config.json");
             if (!pj.isFile()) return fallback;
@@ -154,7 +215,6 @@ public class MiniPacker {
             JSONObject o = new JSONObject(t);
             String n = o.optString("projectname", "");
             if (!n.isEmpty()) {
-                // "掘金壁纸67905222993c2f0001ad0fd6" -> 去掉尾部的 appid
                 if (n.endsWith(fallback)) n = n.substring(0, n.length() - fallback.length());
                 return n.trim().isEmpty() ? fallback : n.trim();
             }
@@ -168,17 +228,14 @@ public class MiniPacker {
             if (p.isFile()) {
                 return new JSONObject(readText(p, 4096)).optString("version", "");
             }
-            File v = new File(src.getParentFile(), "source/versionInfo.json");
-            if (v.isFile()) {
-                return new JSONObject(readText(v, 4096)).optString("version", "");
-            }
         } catch (Throwable ignored) {}
         return "";
     }
 
     static String readText(File f, int max) {
         try (FileInputStream in = new FileInputStream(f)) {
-            byte[] b = new byte[(int) Math.min(f.length(), max)];
+            int len = (int) Math.min(f.length(), max);
+            byte[] b = new byte[Math.max(len, 0)];
             int r = in.read(b);
             return new String(b, 0, Math.max(r, 0), "UTF-8");
         } catch (Throwable t) {
@@ -188,13 +245,13 @@ public class MiniPacker {
 
     // ------------------------------------------------------------ 打包
 
-    /** 把某个 appid 的目录打成 zip，写到 cache 目录，返回文件 */
     public static File pack(Context ctx, Mini m) throws Exception {
         File outDir = new File(ctx.getCacheDir(), "minipack");
         if (!outDir.exists() && !outDir.mkdirs()) throw new Exception("建目录失败");
-        String safe = m.name.isEmpty() ? m.appid : m.name;
+        String safe = m.name == null || m.name.isEmpty() ? m.appid : m.name;
         safe = safe.replaceAll("[\\\\/:*?\"<>|\\s]+", "_");
-        File zip = new File(outDir, safe + "_" + m.appid + ".zip");
+        String prefix = m.isTool() ? "小工具" : "小程序";
+        File zip = new File(outDir, prefix + "_" + safe + "_" + m.appid + ".zip");
 
         File root = new File(m.path);
         FileOutputStream fos = new FileOutputStream(zip);
@@ -202,8 +259,8 @@ public class MiniPacker {
         try {
             addDir(zos, root, root, 0);
         } finally {
-            zos.close();
-            fos.close();
+            try { zos.close(); } catch (Exception ignored) {}
+            try { fos.close(); } catch (Exception ignored) {}
         }
         return zip;
     }
@@ -232,11 +289,6 @@ public class MiniPacker {
 
     // ------------------------------------------------------------ 落地 + 分享
 
-    /**
-     * 把 zip 复制到手机「下载」目录。
-     * Android 10+ 走 MediaStore，低版本走 /sdcard/Download。
-     * 返回可以直接拿去分享的 Uri（拿不到就返回 null）。
-     */
     public static Uri saveToDownloads(Context ctx, File zip) {
         String name = zip.getName();
         if (Build.VERSION.SDK_INT >= 29) {
@@ -265,7 +317,6 @@ public class MiniPacker {
                 XhsSpy.log("crash", "saveToDownloads " + t);
             }
         }
-        // 兜底：直接写 /sdcard/Download/XhsSpy
         try {
             File dst = new File(Environment.getExternalStoragePublicDirectory(
                     Environment.DIRECTORY_DOWNLOADS), "XhsSpy");
@@ -278,14 +329,12 @@ public class MiniPacker {
                 while ((r = in.read(buf)) > 0) os.write(buf, 0, r);
             }
             XhsSpy.log("mini", "saved to " + out.getAbsolutePath());
-            return null;
         } catch (Throwable t) {
             XhsSpy.log("crash", "saveToDownloads fallback " + t);
-            return null;
         }
+        return null;
     }
 
-    /** 弹系统分享面板 */
     public static void share(Context ctx, Uri uri, String title, String text) {
         try {
             Intent i = new Intent(Intent.ACTION_SEND);
@@ -314,21 +363,20 @@ public class MiniPacker {
         } catch (Throwable ignored) {}
     }
 
-    // ------------------------------------------------------------ 一键：打包 + 落地 + 分享
-
-    /** 完整流程，返回提示文本 */
     public static String packAndShare(Context ctx, Mini m, boolean openShare) {
         try {
             File zip = pack(ctx, m);
             Uri uri = saveToDownloads(ctx, zip);
-            String title = (m.name.isEmpty() ? m.appid : m.name);
-            String text = title + "\nappid: " + m.appid
-                    + "\n版本: " + (m.version.isEmpty() ? "?" : m.version)
+            String title = (m.name == null || m.name.isEmpty()) ? m.appid : m.name;
+            String kind = m.isTool() ? "小工具" : "小程序";
+            String text = title + "\n类型: " + kind
+                    + "\nappid: " + m.appid
                     + "\n体积: " + human(m.bytes)
                     + "\n文件数: " + m.files
-                    + "\n\n源码在 zip 里的 source/ 目录，app.json 是路由，"
-                    + "service.js 是业务逻辑。";
-            toast(ctx, "已打包 " + title + " · " + human(zip.length()));
+                    + (m.isTool()
+                        ? "\n\n小工具是纯 H5，source/index.html 直接双击就能在浏览器打开。"
+                        : "\n\n小程序源码在 source/，app.json 是路由，service.js 是业务逻辑。");
+            toast(ctx, "已打包" + kind + " " + title + " · " + human(zip.length()));
             if (openShare) share(ctx, uri, title, text);
             return "ok: " + zip.getAbsolutePath() + " (" + human(zip.length()) + ")";
         } catch (Throwable t) {
@@ -344,26 +392,25 @@ public class MiniPacker {
             new java.util.HashSet<String>());
     static volatile boolean sWatching = false;
 
-    /** 每 15 秒扫一次，发现新小程序就提示一次 */
     public static void startWatcher(final Context ctx) {
         if (sWatching) return;
         sWatching = true;
-        Thread t = new Thread(() -> {
+        Thread th = new Thread(() -> {
             boolean first = true;
             while (true) {
                 try {
                     Thread.sleep(15000);
-                    List<Mini> all = list();
-                    for (Mini m : all) {
-                        if (sKnown.add(m.appid)) {
-                            if (first) continue;   // 首次扫描只登记，不刷屏
-                            String name = m.name.isEmpty() ? m.appid : m.name;
-                            XhsSpy.log("mini", "new miniapp: " + name
-                                    + " (" + m.appid + ") " + human(m.bytes)
-                                    + " source=" + m.hasSource);
-                            toast(ctx, "抓到小程序：" + name
+                    for (Mini m : list()) {
+                        String key = m.type + ":" + m.appid;
+                        if (sKnown.add(key)) {
+                            if (first) continue;
+                            String kind = m.isTool() ? "小工具" : "小程序";
+                            String nm = (m.name == null || m.name.isEmpty()) ? m.appid : m.name;
+                            XhsSpy.log("mini", "new " + kind + ": " + nm
+                                    + " (" + m.appid + ") " + human(m.bytes));
+                            toast(ctx, "抓到" + kind + "：" + nm
                                     + "\n" + human(m.bytes) + " · " + m.appid
-                                    + "\n打开 http://127.0.0.1:8686/mini 导出源码");
+                                    + "\n打开 http://127.0.0.1:8686/mini 看");
                         }
                     }
                     first = false;
@@ -372,7 +419,19 @@ public class MiniPacker {
                 }
             }
         }, "XhsSpyMiniWatch");
-        t.setDaemon(true);
-        t.start();
+        th.setDaemon(true);
+        th.start();
+    }
+
+    /** 找一个 appid 对应的 Mini（优先按类型） */
+    public static Mini find(String appid, String type) {
+        if (appid == null) return null;
+        Mini best = null;
+        for (Mini m : list()) {
+            if (!m.appid.equals(appid)) continue;
+            if (type != null && type.equals(m.type)) return m;
+            if (best == null) best = m;
+        }
+        return best;
     }
 }
