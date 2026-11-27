@@ -290,6 +290,73 @@ public class XhsSpy implements IXposedHookLoadPackage {
         return sb.toString();
     }
 
+    // ------------------------------------------------------------ 常用脚本
+
+    static final String SP_NAME = "xhsspy_prefs";
+    static final String SP_SNIPPETS = "snippets";
+
+    static android.content.SharedPreferences prefs() {
+        try {
+            if (sApp == null) return null;
+            return sApp.getSharedPreferences(SP_NAME, Context.MODE_PRIVATE);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 已存的 JS 片段，JSON 数组 [{name, code}] */
+    public static String getSnippets() {
+        android.content.SharedPreferences sp = prefs();
+        if (sp == null) return "[]";
+        return sp.getString(SP_SNIPPETS, "[]");
+    }
+
+    public static String addSnippet(String name, String code) {
+        android.content.SharedPreferences sp = prefs();
+        if (sp == null) return "{\"ok\":false,\"err\":\"没有 Context\"}";
+        if (code == null || code.trim().isEmpty()) return "{\"ok\":false,\"err\":\"代码为空\"}";
+        try {
+            org.json.JSONArray arr = new org.json.JSONArray(sp.getString(SP_SNIPPETS, "[]"));
+            String nm = (name == null || name.trim().isEmpty())
+                    ? ("脚本 " + (arr.length() + 1)) : name.trim();
+            // 同名的覆盖掉
+            org.json.JSONArray out = new org.json.JSONArray();
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject o = arr.optJSONObject(i);
+                if (o == null) continue;
+                if (nm.equals(o.optString("name"))) continue;
+                out.put(o);
+            }
+            org.json.JSONObject item = new org.json.JSONObject();
+            item.put("name", nm);
+            item.put("code", code);
+            out.put(item);
+            sp.edit().putString(SP_SNIPPETS, out.toString()).apply();
+            return "{\"ok\":true,\"name\":\"" + nm.replace("\"", "") + "\"}";
+        } catch (Throwable t) {
+            return "{\"ok\":false,\"err\":\"" + t + "\"}";
+        }
+    }
+
+    public static String delSnippet(String name) {
+        android.content.SharedPreferences sp = prefs();
+        if (sp == null) return "{\"ok\":false}";
+        try {
+            org.json.JSONArray arr = new org.json.JSONArray(sp.getString(SP_SNIPPETS, "[]"));
+            org.json.JSONArray out = new org.json.JSONArray();
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject o = arr.optJSONObject(i);
+                if (o == null) continue;
+                if (name != null && name.equals(o.optString("name"))) continue;
+                out.put(o);
+            }
+            sp.edit().putString(SP_SNIPPETS, out.toString()).apply();
+            return "{\"ok\":true}";
+        } catch (Throwable t) {
+            return "{\"ok\":false,\"err\":\"" + t + "\"}";
+        }
+    }
+
     /** 一键诊断：进程 / 端口 / WebView / 开关 / 内存 */
     public static String probeAll() {
         StringBuilder sb = new StringBuilder();
