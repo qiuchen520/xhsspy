@@ -249,6 +249,12 @@ public class MiniServer {
                 break;
             }
             case "/classes":     sendJson(out, 200, XhsSpy.loadedClasses(q.get("q"))); break;
+            case "/probe": {
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                bo.write(XhsSpy.probeAll().getBytes("UTF-8"));
+                sendBytes(out, 200, "text/plain; charset=utf-8", bo.toByteArray());
+                break;
+            }
             case "/webviews": {
                 java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
                 bo.write(XhsSpy.webViewReport().getBytes("UTF-8"));
@@ -858,6 +864,7 @@ public class MiniServer {
         arr.put(tool("classes", "列出当前进程里名字含关键字的已加载类，用来找真正的 WebView 实现类。",
                 prop("q", "string", "关键字，默认 webview")));
         arr.put(tool("webviews", "列出所有进程里登记到的 WebView 实例：类名、能不能跑 JS、端口。"));
+        arr.put(tool("probe", "一键诊断：本进程 pid / 端口 / 性能开关 / 内存 / 所有进程的 WebView。"));
         arr.put(tool("set_switch", "打开或关闭一个性能开关。开着会拖慢手机，抓包时才需要。",
                 prop("name", "string", "开关名：body / file / net"),
                 prop("value", "string", "on 或 off"),
@@ -932,6 +939,7 @@ public class MiniServer {
                 case "packages":   return text(toolPackages());
                 case "classes":    return text(XhsSpy.loadedClassesAll(a.optString("q", "webview")));
                 case "webviews":   return text(XhsSpy.webViewReportAll());
+                case "probe":      return text(XhsSpy.probeAll());
                 case "switches": return text(XhsSpy.switches());
                 case "set_switch": return text(XhsSpy.setSwitch(
                         a.optString("name"), a.optString("value")));
