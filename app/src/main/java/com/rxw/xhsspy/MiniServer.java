@@ -240,6 +240,14 @@ public class MiniServer {
             case "/sweep":       doSweep(out, q); break;
             case "/json":        jsonDir(out, q); break;
             case "/api/status":  jsonStatus(out, q); break;
+            case "/announce": {
+                int peer = 0;
+                try { peer = Integer.parseInt(String.valueOf(q.get("port")).trim()); }
+                catch (Throwable ignored) {}
+                if (peer > 0 && peer != port) XhsSpy.sPeerPorts.add(peer);
+                sendJson(out, 200, "{\"ok\":true,\"peers\":" + XhsSpy.sPeerPorts.size() + "}");
+                break;
+            }
             case "/classes":     sendJson(out, 200, XhsSpy.loadedClasses(q.get("q"))); break;
             case "/evals":       sendJson(out, 200, XhsSpy.evalJsViaHttp(
                                      new String(body, "UTF-8"))); break;
