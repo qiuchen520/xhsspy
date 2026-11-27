@@ -30,7 +30,11 @@ public class MiniView {
         List<MiniPacker.Mini> apps = MiniPacker.listByType(MiniPacker.TYPE_APP);
 
         StringBuilder b = new StringBuilder();
-        b.append("<div class=row style=\"margin-bottom:14px\">")
+        b.append("<div style=\"margin-bottom:12px\">")
+         .append("<input id=kw placeholder=\"搜索名称或 appid…\" ")
+         .append("style=\"width:100%;padding:11px 14px;border-radius:12px;")
+         .append("border:1px solid #ddd;font-size:14px;outline:none\"></div>")
+         .append("<div class=row style=\"margin-bottom:14px\">")
          .append("<a class=chip href=\"/mini\">刷新</a>")
          .append("<a class=chip href=\"/tool\">小工具预览</a>")
          .append("</div>");
@@ -57,14 +61,57 @@ public class MiniView {
          .append("联网和 AI 返回假数据。</p>")
          .append("<p class=hint>下载的 zip 会同时存一份到手机「下载/XhsSpy」。</p>");
 
+        b.append(SEARCH_JS);
         send(out, page("小程序 / 小工具", b.toString()));
     }
+
+    static final String SEARCH_JS = """
+<script>
+(function(){
+  var kw = document.getElementById('kw');
+  if(!kw) return;
+  var items = [].slice.call(document.querySelectorAll('.listitem'));
+  var heads = [].slice.call(document.querySelectorAll('h2'));
+  function apply(){
+    var v = (kw.value || '').trim().toLowerCase();
+    var shown = 0;
+    items.forEach(function(el){
+      var n = el.getAttribute('data-n') || '';
+      var hit = !v || n.indexOf(v) >= 0;
+      el.style.display = hit ? '' : 'none';
+      if(hit) shown++;
+    });
+    heads.forEach(function(h){
+      if(!v){ h.style.display=''; return; }
+      var any = false, sib = h.nextElementSibling;
+      while(sib && sib.tagName !== 'H2'){
+        if(sib.classList && sib.classList.contains('listitem') && sib.style.display !== 'none'){
+          any = true; break;
+        }
+        sib = sib.nextElementSibling;
+      }
+      h.style.display = any ? '' : 'none';
+    });
+    var tip = document.getElementById('kwTip');
+    if(tip) tip.textContent = v ? ('匹配 ' + shown + ' 个') : '';
+  }
+  kw.addEventListener('input', apply);
+  kw.addEventListener('search', apply);
+  var d = document.createElement('div');
+  d.id = 'kwTip';
+  d.style.cssText = 'font-size:12px;color:#8a8a95;margin:-6px 0 10px';
+  kw.parentNode.appendChild(d);
+})();
+</script>
+""";
 
     static String card(MiniPacker.Mini m) {
         String name = (m.name == null || m.name.isEmpty()) ? m.appid : m.name;
         String kind = m.isTool() ? "小工具" : "小程序";
         StringBuilder b = new StringBuilder();
-        b.append("<div class=listitem>")
+        b.append("<div class=listitem data-n=\"")
+         .append(esc((name + " " + m.appid + " " + kind).toLowerCase()))
+         .append("\">")
          .append("<div class=li-h><b>").append(esc(name)).append("</b>")
          .append("<span class=dim>").append(esc(kind)).append("</span></div>")
          .append("<div class=li-d>").append(esc(m.appid))
