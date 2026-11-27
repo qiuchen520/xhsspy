@@ -2,8 +2,8 @@ package com.rxw.xhsspy;
 
 import android.content.Context;
 import android.content.Intent;
-import android.graphics.Color;
-import android.graphics.PixelFormat;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -14,8 +14,12 @@ import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.view.animation.DecelerateInterpolator;
+import android.view.animation.OvershootInterpolator;
+import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -23,37 +27,64 @@ import android.widget.TextView;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.RandomAccessFile;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
 /**
- * FloatingWindow — 小红书内的悬浮窗
+ * FloatingWindow - 小红书内的悬浮窗
  *
- * 收起是一个球，点开是「左边分类 + 右边内容」的两栏面板。
- * 内容直接在窗里看，不跳浏览器；只有点头像或者点具体条目的名字才跳网页。
+ * 整个东西只有一个 window：收起是一条胶囊，点一下从胶囊里长成面板，
+ * 再点一下缩回去。没有额外的球，展开和收起是一体的。
  *
- *   小程序  → 列出所有小程序，就地看到名字/体积/文件数，点条目就地导出
- *   小工具  → 同上，还能一键预览
- *   数值    → 就地读页面变量和 localStorage
- *   壁纸    → 就地拉掘金壁纸的首页数据
- *   日志    → 就地看最近几十行
- *   内存    → 运行时内存
+ *   ┌──────────────┐
+ *   │ (o) xhs      │   胶囊
+ *   ├────┬─────────┤
+ *   │分类│ 详细功能 │   面板：左窄右宽，各自成块，拖动时一起走
+ *   │ 一 │         │
+ *   │ 二 │         │
+ *   └────┴─────────┘
+ *
+ * 内容几乎全在窗内完成，只有「预览」这种真的要用网页的才跳浏览器。
  */
 public class FloatingWindow {
 
     private static Context sCtx;
     private static WindowManager sWm;
-    private static View sBall;
-    private static View sPanel;
-    private static WindowManager.LayoutParams sBallLp;
-    private static WindowManager.LayoutParams sPanelLp;
+    private static LinearLayout sRoot;
+    private static LinearLayout sCapsule;
+    private static FrameLayout sPanel;
+    private static LinearLayout sNav;
+    private static ScrollView sScroll;
+    private static LinearLayout sContent;
+    private static WindowManager.LayoutParams sLp;
     private static boolean sShown = false;
+    private static boolean sOpen = false;
     private static final Handler UI = new Handler(Looper.getMainLooper());
 
-    private static LinearLayout sNav;
-    private static ScrollView sContentScroll;
-    private static LinearLayout sContent;
     private static String sCur = "app";
+    private static int sX = -1, sY = -1;
+
+    // 胶囊尺寸 dp
+    private static final int CAP_H = 44;
+    private static final int CAP_W = 126;
+    // 面板目标尺寸 dp
+    private static final int PANEL_W = 306;
+    private static final int PANEL_H = 442;
+
+    // 纱窗色板
+    static final int C_TEXT   = 0xFFF1F3F7;
+    static final int C_SUB    = 0x8AFFFFFF;
+    static final int C_DIM    = 0x5CFFFFFF;
+    static final int C_ACCENT = 0xFFFF6B85;
+    static final int C_BG     = 0xF00E1017;
+    static final int C_STROKE = 0x2EFFFFFF;
+    static final int C_CARD   = 0x14FFFFFF;
+    static final int C_CARD2  = 0x0AFFFFFF;
 
     // ------------------------------------------------------------ 入口
 
@@ -68,10 +99,11 @@ public class FloatingWindow {
                 boolean ok = false;
                 try { ok = Settings.canDrawOverlays(sCtx); } catch (Throwable ignored) {}
                 log("show 开始, canDrawOverlays=" + ok);
-                if (!ok) { requestPermission(); return; }
+                if (!ok) { requestPermission(); sShown = false; return; }
                 attach();
             } catch (Throwable t) {
                 log("show 失败: " + t);
+                sShown = false;
             }
         });
     }
@@ -79,19 +111,14 @@ public class FloatingWindow {
     public static void hide() {
         UI.post(() -> {
             try {
-                if (sWm == null) return;
-                if (sBall != null) sWm.removeView(sBall);
-                if (sPanel != null) sWm.removeView(sPanel);
+                if (sWm != null && sRoot != null) sWm.removeView(sRoot);
             } catch (Throwable ignored) {}
-            sBall = null;
-            sPanel = null;
-            sShown = false;
+            sRoot = null; sCapsule = null; sPanel = null;
+            sShown = false; sOpen = false;
         });
     }
 
-    static void log(String s) {
-        XhsSpy.log("float", s);
-    }
+    static void log(String s) { XhsSpy.log("float", s); }
 
     static void requestPermission() {
         try {
@@ -118,6 +145,12 @@ public class FloatingWindow {
         return g;
     }
 
+    static GradientDrawable glass(int color, int radiusDp, int strokeColor) {
+        GradientDrawable g = round(color, radiusDp);
+        g.setStroke(dp(1), strokeColor);
+        return g;
+    }
+
     static TextView text(String s, int color, int sizeSp) {
         TextView t = new TextView(sCtx);
         t.setText(s);
@@ -125,6 +158,15 @@ public class FloatingWindow {
         t.setTextSize(sizeSp);
         return t;
     }
+
+    static TextView bold(String s, int color, int sizeSp) {
+        TextView t = text(s, color, sizeSp);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        return t;
+    }
+
+    static int screenW() { return sCtx.getResources().getDisplayMetrics().widthPixels; }
+    static int screenH() { return sCtx.getResources().getDisplayMetrics().heightPixels; }
 
     // ------------------------------------------------------------ 挂载
 
@@ -136,164 +178,244 @@ public class FloatingWindow {
                 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                 : WindowManager.LayoutParams.TYPE_PHONE;
 
-        // 球
-        sBall = makeBall();
-        sBallLp = new WindowManager.LayoutParams(
-                dp(50), dp(50), type,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.TRANSLUCENT);
-        sBallLp.gravity = Gravity.TOP | Gravity.START;
-        sBallLp.x = dp(8);
-        sBallLp.y = dp(220);
-        bindDrag(sBall, sBallLp);
-        sWm.addView(sBall, sBallLp);
+        sRoot = new LinearLayout(sCtx);
+        sRoot.setOrientation(LinearLayout.VERTICAL);
+        sRoot.setClipChildren(false);
+        sRoot.setClipToPadding(false);
+
+        // 胶囊
+        sCapsule = makeCapsule();
+        sRoot.addView(sCapsule, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(CAP_H)));
 
         // 面板
         sPanel = makePanel();
-        sPanelLp = new WindowManager.LayoutParams(
-                dp(292), dp(360), type,
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f);
+        sRoot.addView(sPanel, plp);
+        sPanel.setVisibility(View.GONE);
+
+        sLp = new WindowManager.LayoutParams(
+                dp(CAP_W), dp(CAP_H), type,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.TRANSLUCENT);
-        sPanelLp.gravity = Gravity.TOP | Gravity.START;
-        sPanelLp.x = dp(8);
-        sPanelLp.y = dp(280);
-        if (Build.VERSION.SDK_INT >= 31) {
-            try {
-                sPanelLp.flags |= WindowManager.LayoutParams.FLAG_BLUR_BEHIND;
-                sPanelLp.setBlurBehindRadius(dp(24));
-            } catch (Throwable ignored) {}
-        }
-        sPanel.setVisibility(View.GONE);
-        sWm.addView(sPanel, sPanelLp);
+                android.graphics.PixelFormat.TRANSLUCENT);
+        sLp.gravity = Gravity.TOP | Gravity.START;
+        sLp.x = (sX >= 0) ? sX : dp(10);
+        sLp.y = (sY >= 0) ? sY : dp(240);
 
+        try {
+            sWm.addView(sRoot, sLp);
+        } catch (Throwable t) {
+            log("addView 失败 " + t);
+            MiniPacker.toast(sCtx, "悬浮窗添加失败：" + t);
+            sShown = false;
+            return;
+        }
         log("悬浮窗已挂载");
     }
 
-    // ------------------------------------------------------------ 球
-
-    static View makeBall() {
-        TextView v = text("x", Color.WHITE, 18);
-        v.setTypeface(Typeface.DEFAULT_BOLD);
-        v.setGravity(Gravity.CENTER);
-        GradientDrawable bg = round(0xFF2B2F3A, 25);
-        bg.setStroke(dp(1), 0x33FFFFFF);
-        v.setBackground(bg);
-        v.setAlpha(0.92f);
-        v.setOnClickListener(x -> togglePanel());
-        return v;
-    }
-
-    static void togglePanel() {
-        if (sPanel == null) return;
-        boolean open = sPanel.getVisibility() != View.VISIBLE;
-        sPanel.setVisibility(open ? View.VISIBLE : View.GONE);
-        if (open) {
-            refresh();
-            try {
-                sPanelLp.x = Math.max(dp(8), Math.min(sBallLp.x,
-                        sCtx.getResources().getDisplayMetrics().widthPixels - dp(300)));
-                sPanelLp.y = Math.min(sBallLp.y + dp(54),
-                        sCtx.getResources().getDisplayMetrics().heightPixels - dp(380));
-                sWm.updateViewLayout(sPanel, sPanelLp);
-            } catch (Throwable ignored) {}
+    /** 收起 / 展开时把窗口尺寸换掉。锚点（左上角）始终不动，胶囊不会跳。 */
+    static void applySize(boolean expanded) {
+        if (sWm == null || sRoot == null || sLp == null) return;
+        int sw = screenW(), sh = screenH();
+        try {
+            if (expanded) {
+                int w = Math.min(dp(PANEL_W), Math.max(dp(190), sw - sLp.x - dp(8)));
+                int h = Math.min(dp(PANEL_H), Math.max(dp(230), sh - sLp.y - dp(8)));
+                sLp.width = w;
+                sLp.height = h;
+            } else {
+                sLp.width = dp(CAP_W);
+                sLp.height = dp(CAP_H);
+            }
+            sWm.updateViewLayout(sRoot, sLp);
+        } catch (Throwable t) {
+            log("applySize " + t);
         }
     }
 
-    // ------------------------------------------------------------ 面板
+    // ------------------------------------------------------------ 胶囊
+
+    static View makeCapsule() {
+        final LinearLayout cap = new LinearLayout(sCtx);
+        cap.setOrientation(LinearLayout.HORIZONTAL);
+        cap.setGravity(Gravity.CENTER_VERTICAL);
+        cap.setPadding(dp(7), dp(5), dp(12), dp(5));
+
+        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{0xF2181B24, 0xF00E1017});
+        bg.setCornerRadius(dp(CAP_H / 2f));
+        bg.setStroke(dp(1), C_STROKE);
+        cap.setBackground(bg);
+
+        // 头像
+        TextView avatar = bold("无", 0xFFFFFFFF, 11);
+        avatar.setGravity(Gravity.CENTER);
+        GradientDrawable abg = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{0xFFFF3B5C, 0xFF7C4DFF});
+        abg.setShape(GradientDrawable.OVAL);
+        avatar.setBackground(abg);
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(dp(32), dp(32));
+        cap.addView(avatar, alp);
+
+        // 名字
+        TextView name = bold("xhs", C_TEXT, 13);
+        name.setPadding(dp(9), 0, dp(4), 0);
+        cap.addView(name);
+
+        // 整个胶囊接手势：拖动 = 移动窗口，轻点 = 头像切面板 / 文字跳网页
+        cap.setOnTouchListener(new View.OnTouchListener() {
+            int baseX, baseY;
+            float downRX, downRY;
+            boolean moved = false;
+            long downAt = 0;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent e) {
+                switch (e.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        baseX = sLp.x; baseY = sLp.y;
+                        downRX = e.getRawX(); downRY = e.getRawY();
+                        moved = false;
+                        downAt = System.currentTimeMillis();
+                        avatar.animate().scaleX(0.86f).scaleY(0.86f).setDuration(80).start();
+                        return true;
+                    case MotionEvent.ACTION_MOVE: {
+                        int dx = (int) (e.getRawX() - downRX);
+                        int dy = (int) (e.getRawY() - downRY);
+                        if (!moved && (Math.abs(dx) > dp(8) || Math.abs(dy) > dp(8))) moved = true;
+                        if (!moved) return true;
+                        int nx = baseX + dx, ny = baseY + dy;
+                        nx = Math.max(-dp(30), Math.min(nx, screenW() - dp(50)));
+                        ny = Math.max(-dp(10), Math.min(ny, screenH() - dp(40)));
+                        sLp.x = nx; sLp.y = ny;
+                        try { sWm.updateViewLayout(sRoot, sLp); } catch (Throwable ignored) {}
+                        return true;
+                    }
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL: {
+                        avatar.animate().scaleX(1f).scaleY(1f).setDuration(140).start();
+                        if (moved) {
+                            sX = sLp.x; sY = sLp.y;
+                            if (sOpen) applySize(true);
+                            return true;
+                        }
+                        if (e.getActionMasked() == MotionEvent.ACTION_CANCEL) return true;
+                        if (System.currentTimeMillis() - downAt > 900) { toggle(); return true; }
+                        float lx = e.getX();
+                        if (lx < dp(46)) toggle();
+                        else openUrl("/");
+                        return true;
+                    }
+                }
+                return true;
+            }
+        });
+        return cap;
+    }
+
+    static void toggle() {
+        if (sOpen) closePanel(); else openPanel();
+    }
+
+    static void openPanel() {
+        if (sPanel == null || sOpen) return;
+        sOpen = true;
+        applySize(true);
+        sPanel.setVisibility(View.VISIBLE);
+        sPanel.setPivotX(dp(26));
+        sPanel.setPivotY(-dp(CAP_H + 4));
+        sPanel.setScaleX(0.34f);
+        sPanel.setScaleY(0.34f);
+        sPanel.setAlpha(0f);
+        sPanel.animate()
+                .scaleX(1f).scaleY(1f).alpha(1f)
+                .setDuration(260)
+                .setInterpolator(new OvershootInterpolator(0.85f))
+                .start();
+        sCapsule.animate().alpha(0.62f).setDuration(200).start();
+        buildNav();
+        refresh();
+        log("面板展开");
+    }
+
+    static void closePanel() {
+        if (sPanel == null || !sOpen) return;
+        sOpen = false;
+        setImeMode(false);
+        sCapsule.animate().alpha(1f).setDuration(160).start();
+        sPanel.animate()
+                .scaleX(0.34f).scaleY(0.34f).alpha(0f)
+                .setDuration(200)
+                .setInterpolator(new DecelerateInterpolator(1.6f))
+                .withEndAction(() -> {
+                    if (sPanel == null) return;
+                    sPanel.setVisibility(View.GONE);
+                    applySize(false);
+                })
+                .start();
+        log("面板收起");
+    }
+
+    // ------------------------------------------------------------ 面板骨架
 
     static final String[] NAV_KEYS = {"app", "tool", "vars", "wall", "log", "mem"};
     static final String[] NAV_TEXT = {"小程序", "小工具", "数值", "壁纸", "日志", "内存"};
 
-    static View makePanel() {
-        // 外层：竖排 = 顶部胶囊 + 两栏
-        LinearLayout root = new LinearLayout(sCtx);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(10), dp(10), dp(10), dp(10));
-        GradientDrawable bg = round(0xE6141720, 20);
-        bg.setStroke(dp(1), 0x22FFFFFF);
-        root.setBackground(bg);
+    static FrameLayout makePanel() {
+        FrameLayout wrap = new FrameLayout(sCtx);
 
-        // 顶部胶囊：头像 + xhs
-        LinearLayout head = new LinearLayout(sCtx);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        head.setPadding(dp(6), dp(5), dp(12), dp(5));
-        GradientDrawable hbg = round(0x1AFFFFFF, 999);
-        head.setBackground(hbg);
+        // 背板：Android 12+ 真模糊，低版本用不透明度兜
+        wrap.setBackground(glass(C_BG, 18, C_STROKE));
+        int pad = dp(8);
+        wrap.setPadding(pad, dp(6), pad, pad);
 
-        TextView avatar = text("蛛", 0xFFFFFFFF, 12);
-        avatar.setTypeface(Typeface.DEFAULT_BOLD);
-        avatar.setGravity(Gravity.CENTER);
-        GradientDrawable abg = new GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                new int[]{0xFFFF2442, 0xFF8B5CF6});
-        abg.setShape(GradientDrawable.OVAL);
-        avatar.setBackground(abg);
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(dp(26), dp(26));
-        head.addView(avatar, alp);
-        bindAvatarScale(avatar);
-
-        TextView name = text("xhs", 0xFFFFFFFF, 13);
-        name.setPadding(dp(8), 0, 0, 0);
-        name.setOnClickListener(x -> openUrl("/"));
-        head.addView(name);
-
-        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        hlp.bottomMargin = dp(10);
-        root.addView(head, hlp);
-
-        // 两栏
         LinearLayout body = new LinearLayout(sCtx);
         body.setOrientation(LinearLayout.HORIZONTAL);
-        root.addView(body, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.MATCH_PARENT));
+        wrap.addView(body, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
 
-        // 左：分类
+        // 左栏
+        LinearLayout left = new LinearLayout(sCtx);
+        left.setOrientation(LinearLayout.VERTICAL);
+        GradientDrawable lbg = glass(C_CARD2, 14, 0x18FFFFFF);
+        left.setBackground(lbg);
+        left.setPadding(dp(4), dp(6), dp(4), dp(6));
+        LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(dp(74),
+                LinearLayout.LayoutParams.MATCH_PARENT);
+        llp.rightMargin = dp(7);
+        body.addView(left, llp);
+
         sNav = new LinearLayout(sCtx);
         sNav.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(dp(78),
-                LinearLayout.LayoutParams.MATCH_PARENT);
-        nlp.rightMargin = dp(8);
-        body.addView(sNav, nlp);
+        left.addView(sNav, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        // 右：内容
-        sContentScroll = new ScrollView(sCtx);
-        sContentScroll.setVerticalScrollBarEnabled(false);
-        GradientDrawable cbg = round(0x0DFFFFFF, 14);
-        sContentScroll.setBackground(cbg);
-        sContent = new LinearLayout(sCtx);
-        sContent.setOrientation(LinearLayout.VERTICAL);
-        sContent.setPadding(dp(10), dp(10), dp(10), dp(10));
-        sContentScroll.addView(sContent);
-        body.addView(sContentScroll, new LinearLayout.LayoutParams(0,
+        // 右栏
+        FrameLayout right = new FrameLayout(sCtx);
+        GradientDrawable rbg = glass(C_CARD2, 14, 0x18FFFFFF);
+        right.setBackground(rbg);
+        body.addView(right, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.MATCH_PARENT, 1f));
 
-        buildNav();
-        return root;
-    }
+        sScroll = new ScrollView(sCtx);
+        sScroll.setVerticalScrollBarEnabled(false);
+        sScroll.setPadding(dp(9), dp(8), dp(9), dp(8));
+        sScroll.setClipToPadding(false);
+        right.addView(sScroll, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
 
-    static void bindAvatarScale(View v) {
-        v.setOnTouchListener(new View.OnTouchListener() {
-            @Override
-            public boolean onTouch(View view, MotionEvent e) {
-                switch (e.getAction()) {
-                    case MotionEvent.ACTION_DOWN:
-                        view.animate().scaleX(0.82f).scaleY(0.82f).setDuration(90).start();
-                        break;
-                    case MotionEvent.ACTION_UP:
-                    case MotionEvent.ACTION_CANCEL:
-                        view.animate().scaleX(1f).scaleY(1f).setDuration(120).start();
-                        break;
-                }
-                return false;
-            }
-        });
-        v.setOnClickListener(x -> openUrl("/mini"));
+        sContent = new LinearLayout(sCtx);
+        sContent.setOrientation(LinearLayout.VERTICAL);
+        sScroll.addView(sContent, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT));
+
+        return wrap;
     }
 
     static void buildNav() {
@@ -302,14 +424,21 @@ public class FloatingWindow {
         for (int i = 0; i < NAV_KEYS.length; i++) {
             final String key = NAV_KEYS[i];
             boolean on = key.equals(sCur);
-            TextView t = text(NAV_TEXT[i], on ? 0xFFFFFFFF : 0x99FFFFFF, 12);
-            t.setPadding(dp(9), dp(9), dp(9), dp(9));
-            t.setBackground(round(on ? 0x26FFFFFF : 0x00000000, 12));
+            TextView t = bold(NAV_TEXT[i], on ? 0xFFFFFFFF : 0x8AFFFFFF, 12);
+            t.setGravity(Gravity.CENTER);
+            t.setPadding(0, dp(10), 0, dp(10));
+            if (on) {
+                GradientDrawable g = round(0x2EFFFFFF, 11);
+                g.setStroke(dp(1), 0x33FFFFFF);
+                t.setBackground(g);
+            } else {
+                t.setBackground(round(0x00000000, 11));
+            }
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT);
-            lp.bottomMargin = dp(4);
-            t.setOnClickListener(x -> {
+            lp.bottomMargin = dp(3);
+            t.setOnClickListener(v -> {
                 sCur = key;
                 buildNav();
                 refresh();
@@ -318,7 +447,7 @@ public class FloatingWindow {
         }
     }
 
-    // ------------------------------------------------------------ 内容渲染
+    // ------------------------------------------------------------ 内容分发
 
     static void refresh() {
         if (sContent == null) return;
@@ -337,261 +466,597 @@ public class FloatingWindow {
         }
     }
 
-    static TextView row(String s, int color, int size) {
-        TextView t = text(s, color, size);
-        t.setPadding(0, dp(4), 0, dp(4));
-        return t;
-    }
-
     static TextView head(String s) {
-        TextView t = text(s, 0xFFFF7A8A, 11);
-        t.setTypeface(Typeface.DEFAULT_BOLD);
+        TextView t = bold(s, C_ACCENT, 11);
         t.setPadding(0, dp(2), 0, dp(6));
         return t;
     }
 
-    static void renderMinis(String type) {
-        List<MiniPacker.Mini> list = MiniPacker.listByType(type);
-        sContent.addView(head((type.equals(MiniPacker.TYPE_TOOL) ? "小工具 · " : "小程序 · ")
-                + list.size()));
-        if (list.isEmpty()) {
-            sContent.addView(row("还没有缓存\n去 App 里点开一个再回来", 0x66FFFFFF, 11));
-            return;
-        }
-        for (final MiniPacker.Mini m : list) {
-            final String nm = (m.name == null || m.name.isEmpty()) ? m.appid : m.name;
-            LinearLayout card = new LinearLayout(sCtx);
-            card.setOrientation(LinearLayout.VERTICAL);
-            card.setPadding(dp(8), dp(8), dp(8), dp(8));
-            card.setBackground(round(0x14FFFFFF, 10));
-            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            clp.bottomMargin = dp(6);
-            card.setLayoutParams(clp);
-
-            TextView title = text(nm, 0xFFFFFFFF, 12);
-            title.setTypeface(Typeface.DEFAULT_BOLD);
-            title.setOnClickListener(x -> {
-                if (type.equals(MiniPacker.TYPE_TOOL) && m.hasSource) {
-                    openUrl("/tool/" + m.appid + "/");
-                } else {
-                    openUrl("/mini");
-                }
-            });
-            card.addView(title);
-
-            card.addView(text(MiniPacker.human(m.bytes) + " · " + m.files + " 个文件",
-                    0x88FFFFFF, 10));
-
-            LinearLayout btns = new LinearLayout(sCtx);
-            btns.setOrientation(LinearLayout.HORIZONTAL);
-            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            blp.topMargin = dp(6);
-            btns.setLayoutParams(blp);
-
-            btns.addView(chip("导出", 0x33638DFF, () -> doPack(m, false)));
-            btns.addView(chip("分享", 0x338B5CF6, () -> doPack(m, true)));
-            if (type.equals(MiniPacker.TYPE_TOOL) && m.hasSource) {
-                btns.addView(chip("预览", 0x3322C55E,
-                        () -> openUrl("/tool/" + m.appid + "/")));
-            }
-            card.addView(btns);
-            sContent.addView(card);
-        }
+    static TextView row(String s, int color, int size) {
+        TextView t = text(s, color, size);
+        t.setPadding(0, dp(3), 0, dp(3));
+        return t;
     }
 
-    static TextView chip(String label, int bg, final Runnable act) {
-        TextView t = text(label, 0xFFE8E8EC, 10);
+    static LinearLayout card() {
+        LinearLayout c = new LinearLayout(sCtx);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setPadding(dp(9), dp(8), dp(9), dp(8));
+        c.setBackground(glass(C_CARD, 11, 0x14FFFFFF));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(7);
+        c.setLayoutParams(lp);
+        return c;
+    }
+
+    static TextView chip(String label, int bg, int fg, final Runnable act) {
+        TextView t = bold(label, fg, 10);
         t.setGravity(Gravity.CENTER);
         t.setPadding(dp(10), dp(5), dp(10), dp(5));
         t.setBackground(round(bg, 8));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.rightMargin = dp(6);
+        lp.rightMargin = dp(5);
         t.setLayoutParams(lp);
-        t.setOnClickListener(x -> {
-            try { act.run(); } catch (Throwable e) { log("按钮 " + e); }
-        });
+        t.setOnClickListener(v -> { try { act.run(); } catch (Throwable e) { log("chip " + e); } });
         return t;
     }
 
+    // ------------------------------------------------------------ 小程序 / 小工具
+
+    static void renderMinis(String type) {
+        List<MiniPacker.Mini> list;
+        try { list = MiniPacker.listByType(type); }
+        catch (Throwable t) { list = new ArrayList<>(); }
+        boolean tool = MiniPacker.TYPE_TOOL.equals(type);
+
+        sContent.addView(head((tool ? "小工具" : "小程序") + " · " + list.size() + " 个"));
+        if (list.isEmpty()) {
+            sContent.addView(row("还没有缓存\n去 App 里点开一个再回来", C_DIM, 11));
+            return;
+        }
+        for (final MiniPacker.Mini m : list) {
+            final String nm = (m.name == null || m.name.isEmpty()) ? m.appid : m.name;
+            LinearLayout c = card();
+
+            TextView title = bold(nm, C_TEXT, 12);
+            title.setMaxLines(2);
+            title.setOnClickListener(v -> {
+                if (tool && m.hasSource) openUrl("/tool/" + m.appid + "/");
+                else openUrl("/mini");
+            });
+            c.addView(title);
+
+            c.addView(row(MiniPacker.human(m.bytes) + " · " + m.files + " 个文件",
+                    C_SUB, 10));
+
+            LinearLayout btns = new LinearLayout(sCtx);
+            btns.setOrientation(LinearLayout.HORIZONTAL);
+            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            blp.topMargin = dp(7);
+            btns.setLayoutParams(blp);
+            btns.addView(chip("导出", 0x2E5B8CFF, 0xFFD3E1FF, () -> doPack(m, false)));
+            btns.addView(chip("分享", 0x2E8B5CF6, 0xFFDDD0FF, () -> doPack(m, true)));
+            if (tool && m.hasSource) {
+                btns.addView(chip("预览", 0x2E22C55E, 0xFFC8F2D8,
+                        () -> openUrl("/tool/" + m.appid + "/")));
+            }
+            c.addView(btns);
+            sContent.addView(c);
+        }
+    }
+
     static void doPack(final MiniPacker.Mini m, final boolean share) {
+        MiniPacker.toast(sCtx, "正在打包 " + (m.name == null ? m.appid : m.name) + "…");
         new Thread(() -> {
             final String r = MiniPacker.packAndShare(sCtx, m, share);
-            UI.post(() -> MiniPacker.toast(sCtx, r.startsWith("ok") ? "已导出" : r));
+            UI.post(() -> MiniPacker.toast(sCtx, r != null && r.startsWith("ok") ? "已导出" : String.valueOf(r)));
         }, "XhsSpyPackBtn").start();
     }
 
-    static void renderVars() throws Exception {
-        String raw = XhsSpy.probeVars();
-        JSONObject o;
-        try {
-            o = new JSONObject(raw);
-        } catch (Exception e) {
-            sContent.addView(head("数值"));
-            sContent.addView(row("读不到页面：没有 WebView\n先在 App 里打开一个小工具", 0x66FFFFFF, 11));
+    // ------------------------------------------------------------ 数值（gg 味）
+
+    static JSONObject sVarsCache = null;
+    static String sVarTab = "w";     // w = window, s = storage
+    static String sVarFilter = "all"; // all / number / text / bool
+    static String sVarQuery = "";
+    static LinearLayout sVarList = null;
+
+    static void renderVars() {
+        sContent.addView(head("运行时数值"));
+
+        // 搜索
+        final EditText search = new EditText(sCtx);
+        search.setHint("搜索变量名或值");
+        search.setHintTextColor(0x4DFFFFFF);
+        search.setTextColor(C_TEXT);
+        search.setTextSize(11);
+        search.setSingleLine(true);
+        search.setBackground(glass(0x14FFFFFF, 9, 0x1AFFFFFF));
+        search.setPadding(dp(9), dp(6), dp(9), dp(6));
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        slp.bottomMargin = dp(7);
+        search.setLayoutParams(slp);
+        search.setText(sVarQuery);
+        search.setOnFocusChangeListener((v, has) -> setImeMode(has));
+        search.addTextChangedListener(new android.text.TextWatcher() {
+            public void afterTextChanged(android.text.Editable e) {
+                sVarQuery = e.toString();
+                if (sVarList != null) fillVars(sVarList);
+            }
+            public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            public void onTextChanged(CharSequence s, int a, int b, int c) {}
+        });
+        sContent.addView(search);
+
+        // 作用域 tab
+        LinearLayout tabs = new LinearLayout(sCtx);
+        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        tlp.bottomMargin = dp(6);
+        tabs.setLayoutParams(tlp);
+        tabs.addView(chip("window", sVarTab.equals("w") ? 0x33FFFFFF : 0x12FFFFFF,
+                sVarTab.equals("w") ? 0xFFFFFFFF : 0x8AFFFFFF,
+                () -> { sVarTab = "w"; refresh(); }));
+        tabs.addView(chip("localStorage", sVarTab.equals("s") ? 0x33FFFFFF : 0x12FFFFFF,
+                sVarTab.equals("s") ? 0xFFFFFFFF : 0x8AFFFFFF,
+                () -> { sVarTab = "s"; refresh(); }));
+        sContent.addView(tabs);
+
+        // 类型过滤
+        LinearLayout filters = new LinearLayout(sCtx);
+        filters.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        flp.bottomMargin = dp(7);
+        filters.setLayoutParams(flp);
+        String[][] fs = {{"all", "全部"}, {"number", "数字"}, {"text", "文本"}, {"bool", "布尔"}};
+        for (final String[] f : fs) {
+            boolean on = f[0].equals(sVarFilter);
+            filters.addView(chip(f[1], on ? 0x2EFF6B85 : 0x12FFFFFF,
+                    on ? 0xFFFFB3C0 : 0x8AFFFFFF,
+                    () -> { sVarFilter = f[0]; if (sVarList != null) fillVars(sVarList); }));
+        }
+        sContent.addView(filters);
+
+        // 列表容器
+        sVarList = new LinearLayout(sCtx);
+        sVarList.setOrientation(LinearLayout.VERTICAL);
+        sContent.addView(sVarList, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        if (sVarsCache != null) { fillVars(sVarList); return; }
+
+        sVarList.addView(row("读取页面中…", C_DIM, 11));
+        new Thread(() -> {
+            final String raw = XhsSpy.probeVars();
+            UI.post(() -> {
+                try { sVarsCache = new JSONObject(raw); }
+                catch (Throwable t) { sVarsCache = null; }
+                if (sVarList != null && "vars".equals(sCur)) fillVars(sVarList);
+            });
+        }, "XhsSpyVars").start();
+    }
+
+    /** 重新按当前缓存 + 过滤条件画列表 */
+    static void fillVars(LinearLayout host) {
+        host.removeAllViews();
+        if (sVarsCache == null) {
+            host.addView(row("读不到页面\n先在 App 里打开一个小工具或网页，再刷新", C_DIM, 11));
+            host.addView(chip("重新读取", 0x2E5B8CFF, 0xFFD3E1FF,
+                    () -> { sVarsCache = null; refresh(); }));
             return;
         }
-        sContent.addView(head("页面 · " + o.optString("title", "")));
-        sContent.addView(row(o.optString("url", ""), 0x66FFFFFF, 9));
+        if ("w".equals(sVarTab)) fillWindowVars(host); else fillStorageVars(host);
+    }
 
-        JSONArray vars = o.optJSONArray("vars");
-        sContent.addView(head("变量 · " + (vars == null ? 0 : vars.length())));
+    static boolean matchFilter(String type, String key, String val) {
+        String q = sVarQuery == null ? "" : sVarQuery.trim().toLowerCase(Locale.US);
+        if (!q.isEmpty()) {
+            boolean hit = key.toLowerCase(Locale.US).contains(q)
+                    || (val != null && val.toLowerCase(Locale.US).contains(q));
+            if (!hit) return false;
+        }
+        if ("all".equals(sVarFilter)) return true;
+        if ("number".equals(sVarFilter)) return "数字".equals(type);
+        if ("text".equals(sVarFilter)) return "文本".equals(type);
+        if ("bool".equals(sVarFilter)) return "布尔".equals(type);
+        return true;
+    }
+
+    static void fillWindowVars(LinearLayout host) {
+        JSONArray vars = sVarsCache.optJSONArray("vars");
+        int shown = 0, total = vars == null ? 0 : vars.length();
         if (vars != null) {
-            int n = 0;
-            for (int i = 0; i < vars.length() && n < 40; i++) {
+            for (int i = 0; i < vars.length(); i++) {
                 JSONObject v = vars.optJSONObject(i);
                 if (v == null) continue;
                 if (!v.optBoolean("w", false)) continue;
-                n++;
                 String k = v.optString("k");
+                String t = v.optString("t");
                 String val = v.optString("v");
-                LinearLayout it = new LinearLayout(sCtx);
-                it.setOrientation(LinearLayout.VERTICAL);
-                it.setPadding(dp(6), dp(5), dp(6), dp(5));
-                it.setBackground(round(0x12FFFFFF, 8));
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT);
-                lp.bottomMargin = dp(4);
-                it.setLayoutParams(lp);
-                it.addView(text(k, 0xFFFFFFFF, 11));
-                it.addView(text(v.optString("t") + " · " + val, 0x88FFFFFF, 9));
-                it.setOnClickListener(x -> editVar(k, val));
-                sContent.addView(it);
+                if (!matchFilter(t, k, val)) continue;
+                addVarItem(host, "window", k, t, val);
+                shown++;
             }
-            if (n == 0) sContent.addView(row("没有可直接改的变量", 0x66FFFFFF, 10));
         }
+        if (shown == 0) host.addView(row("没有匹配的可改变量", C_DIM, 10));
+        TextView refresh = chip("重新读取", 0x12FFFFFF, 0x99FFFFFF,
+                () -> { sVarsCache = null; refresh(); });
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        rlp.topMargin = dp(6);
+        refresh.setLayoutParams(rlp);
+        host.addView(refresh);
+        host.addView(row(total + " 个变量，可改 " + shown, C_DIM, 9));
+    }
 
-        JSONArray ls = o.optJSONArray("storage");
-        sContent.addView(head("本地存储 · " + (ls == null ? 0 : ls.length())));
+    static void fillStorageVars(LinearLayout host) {
+        JSONArray ls = sVarsCache.optJSONArray("storage");
+        int shown = 0;
         if (ls != null) {
-            for (int i = 0; i < ls.length() && i < 20; i++) {
+            for (int i = 0; i < ls.length(); i++) {
                 JSONObject v = ls.optJSONObject(i);
                 if (v == null) continue;
                 String k = v.optString("k");
                 String val = v.optString("v");
-                LinearLayout it = new LinearLayout(sCtx);
-                it.setOrientation(LinearLayout.VERTICAL);
-                it.setPadding(dp(6), dp(5), dp(6), dp(5));
-                it.setBackground(round(0x12FFFFFF, 8));
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT);
-                lp.bottomMargin = dp(4);
-                it.setLayoutParams(lp);
-                it.addView(text(k, 0xFFFFFFFF, 11));
-                String shortVal = val.length() > 60 ? val.substring(0, 60) + "…" : val;
-                it.addView(text(shortVal, 0x88FFFFFF, 9));
-                it.setOnClickListener(x -> editStorage(k, val));
-                sContent.addView(it);
+                if (!matchFilter("文本", k, val)) continue;
+                addVarItem(host, "storage", k, "文本", val);
+                shown++;
             }
         }
+        if (shown == 0) host.addView(row("没有匹配的条目", C_DIM, 10));
+        host.addView(row("localStorage · " + shown + " 条", C_DIM, 9));
     }
 
-    static void editVar(final String k, String old) {
-        promptInput("改 " + k, old, v -> {
-            final JSONObject r = VarsPanel.set("window", k, v, "auto");
-            UI.post(() -> {
-                MiniPacker.toast(sCtx, r.optBoolean("ok", false)
-                        ? "已改成 " + r.optString("now") : "失败");
-                refresh();
-            });
+    /** 一条变量：点开就地展开编辑行，不弹对话框 */
+    static void addVarItem(LinearLayout host, final String scope, final String key,
+                           String type, String val) {
+        final LinearLayout box = new LinearLayout(sCtx);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackground(glass(0x12FFFFFF, 9, 0x14FFFFFF));
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        blp.bottomMargin = dp(5);
+        box.setLayoutParams(blp);
+
+        final LinearLayout face = new LinearLayout(sCtx);
+        face.setOrientation(LinearLayout.VERTICAL);
+        face.setPadding(dp(8), dp(6), dp(8), dp(6));
+
+        LinearLayout line1 = new LinearLayout(sCtx);
+        line1.setOrientation(LinearLayout.HORIZONTAL);
+        line1.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView kt = bold(key, C_TEXT, 11);
+        kt.setMaxLines(1);
+        kt.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        line1.addView(kt, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView badge = text(type, 0xB3FFFFFF, 9);
+        badge.setPadding(dp(6), dp(1), dp(6), dp(1));
+        badge.setBackground(round(0x26FF6B85, 6));
+        line1.addView(badge);
+
+        face.addView(line1);
+
+        String shortVal = val == null ? "null" : val;
+        if (shortVal.length() > 90) shortVal = shortVal.substring(0, 90) + "…";
+        TextView vt = text(shortVal, C_SUB, 10);
+        vt.setMaxLines(2);
+        vt.setPadding(0, dp(2), 0, 0);
+        face.addView(vt);
+
+        box.addView(face);
+
+        face.setOnClickListener(v -> {
+            if (box.getChildCount() > 1) { box.removeViewAt(1); setImeMode(false); return; }
+            setImeMode(true);
+            box.addView(makeEditor(scope, key, type, val, box));
         });
+
+        host.addView(box);
     }
 
-    static void editStorage(final String k, String old) {
-        promptInput("改 " + k, old, v -> {
-            final JSONObject r = VarsPanel.set("storage", k, v, "auto");
-            UI.post(() -> {
-                MiniPacker.toast(sCtx, r.optBoolean("ok", false) ? "已保存" : "失败");
-                refresh();
-            });
-        });
-    }
+    static View makeEditor(final String scope, final String key, String type,
+                           String oldVal, final LinearLayout box) {
+        LinearLayout ed = new LinearLayout(sCtx);
+        ed.setOrientation(LinearLayout.VERTICAL);
+        ed.setPadding(dp(8), 0, dp(8), dp(8));
 
-    interface OnText { void run(String v); }
+        final EditText input = new EditText(sCtx);
+        input.setText(oldVal == null ? "" : oldVal);
+        input.setTextColor(C_TEXT);
+        input.setTextSize(11);
+        input.setSingleLine(false);
+        input.setMaxLines(4);
+        input.setBackground(glass(0x1AFFFFFF, 8, 0x22FFFFFF));
+        input.setPadding(dp(8), dp(6), dp(8), dp(6));
+        input.setOnFocusChangeListener((v, has) -> setImeMode(has));
+        ed.addView(input, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
-    static void promptInput(String title, String old, final OnText cb) {
-        try {
-            final android.widget.EditText et = new android.widget.EditText(sCtx);
-            et.setText(old == null ? "" : old);
-            et.setTextSize(12);
-            et.setPadding(dp(10), dp(8), dp(10), dp(8));
-            new android.app.AlertDialog.Builder(sCtx)
-                    .setTitle(title)
-                    .setView(et)
-                    .setPositiveButton("确定", (d, w) -> cb.run(et.getText().toString()))
-                    .setNegativeButton("取消", null)
-                    .show();
-        } catch (Throwable t) {
-            log("弹窗失败 " + t);
+        LinearLayout btns = new LinearLayout(sCtx);
+        btns.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        blp.topMargin = dp(6);
+        btns.setLayoutParams(blp);
+
+        final String[] asType = {"auto"};
+        String[] typeNames = {"自动", "数字", "文本", "布尔"};
+        final String[] typeVals = {"auto", "number", "string", "boolean"};
+        for (int i = 0; i < typeNames.length; i++) {
+            final String tv = typeVals[i];
+            final boolean on = (i == 0);
+            TextView c = chip(typeNames[i],
+                    on ? 0x2EFF6B85 : 0x12FFFFFF,
+                    on ? 0xFFFFB3C0 : 0x8AFFFFFF,
+                    () -> {
+                        asType[0] = tv;
+                        for (int j = 0; j < btns.getChildCount(); j++) {
+                            TextView x = (TextView) btns.getChildAt(j);
+                            boolean sel = typeVals[j].equals(tv);
+                            x.setBackground(round(sel ? 0x2EFF6B85 : 0x12FFFFFF, 8));
+                            x.setTextColor(sel ? 0xFFFFB3C0 : 0x8AFFFFFF);
+                        }
+                    });
+            btns.addView(c);
         }
+        ed.addView(btns);
+
+        LinearLayout acts = new LinearLayout(sCtx);
+        acts.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        alp.topMargin = dp(7);
+        acts.setLayoutParams(alp);
+
+        acts.addView(chip("写入", 0x33FF6B85, 0xFFFFD6DD, () -> {
+            final String nv = input.getText().toString();
+            new Thread(() -> {
+                final JSONObject r = VarsPanel.set(scope, key, nv, asType[0]);
+                UI.post(() -> {
+                    boolean ok = r.optBoolean("ok", false);
+                    MiniPacker.toast(sCtx, ok ? ("已改成 " + r.optString("now"))
+                            : ("失败：" + r.optString("error", "?")));
+                    if (ok) { setImeMode(false); sVarsCache = null; refresh(); }
+                });
+            }, "XhsSpySet").start();
+        }));
+        acts.addView(chip("取消", 0x12FFFFFF, 0x99FFFFFF, () -> {
+            box.removeViewAt(1);
+            setImeMode(false);
+        }));
+        ed.addView(acts);
+
+        return ed;
     }
+
+    /** 输入框拿到焦点才放开 window 的 NOT_FOCUSABLE，否则键盘弹不出来 */
+    static void setImeMode(boolean on) {
+        if (sLp == null || sWm == null || sRoot == null) return;
+        int base = WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
+        if (!on) base |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+        if (base == sLp.flags) return;
+        sLp.flags = base;
+        try { sWm.updateViewLayout(sRoot, sLp); } catch (Throwable ignored) {}
+    }
+
+    // ------------------------------------------------------------ 壁纸
 
     static void renderWall() {
         sContent.addView(head("掘金壁纸"));
-        sContent.addView(row("正在拉首页…", 0x66FFFFFF, 10));
+        final LinearLayout grid = new LinearLayout(sCtx);
+        grid.setOrientation(LinearLayout.VERTICAL);
+        sContent.addView(grid);
+        grid.addView(row("拉取首页中…", C_DIM, 10));
+
         new Thread(() -> {
-            final StringBuilder sb = new StringBuilder();
+            final List<String> thumbs = new ArrayList<>();
+            final StringBuilder info = new StringBuilder();
             try {
                 JSONObject d = Wall.api("home", new JSONObject());
                 JSONObject data = d.optJSONObject("data");
                 if (data == null) data = d;
                 JSONArray list = data.optJSONArray("list");
                 JSONArray rec = data.optJSONArray("recommend");
-                sb.append("作者 ").append(rec == null ? 0 : rec.length())
-                  .append(" 位 · 图 ").append(list == null ? 0 : list.length()).append(" 张\n");
-                if (rec != null) {
-                    for (int i = 0; i < rec.length() && i < 6; i++) {
-                        JSONObject a = rec.optJSONObject(i);
-                        if (a != null) sb.append("· ").append(a.optString("app_name"))
-                                .append("  #").append(a.optInt("acc_id")).append('\n');
+                info.append("作者 ").append(rec == null ? 0 : rec.length())
+                    .append(" 位 · 图 ").append(list == null ? 0 : list.length());
+                if (list != null) {
+                    for (int i = 0; i < list.length() && thumbs.size() < 9; i++) {
+                        JSONObject o = list.optJSONObject(i);
+                        if (o == null) continue;
+                        String u = o.optString("thumb");
+                        if (u.isEmpty()) u = o.optString("preview");
+                        if (u.isEmpty()) u = o.optString("img");
+                        if (!u.isEmpty()) {
+                            if (!u.startsWith("http")) u = "https://min-cdn.xliii.cn/" + u;
+                            thumbs.add(u);
+                        }
                     }
                 }
             } catch (Throwable t) {
-                sb.append("拉取失败：").append(t);
+                info.append("拉取失败：").append(t);
             }
+            final String infoStr = info.toString();
             UI.post(() -> {
-                if (sContent == null || !"wall".equals(sCur)) return;
-                sContent.removeAllViews();
-                sContent.addView(head("掘金壁纸"));
-                sContent.addView(row(sb.toString(), 0xCCFFFFFF, 10));
-                sContent.addView(chip("打开网页版", 0x33638DFF, () -> openUrl("/wall")));
+                if (grid == null || !"wall".equals(sCur)) return;
+                grid.removeAllViews();
+                grid.addView(row(infoStr, C_SUB, 10));
+                if (thumbs.isEmpty()) {
+                    grid.addView(chip("打开网页版", 0x2E5B8CFF, 0xFFD3E1FF,
+                            () -> openUrl("/wall")));
+                    return;
+                }
+                LinearLayout line = null;
+                for (int i = 0; i < thumbs.size(); i++) {
+                    if (i % 2 == 0) {
+                        line = new LinearLayout(sCtx);
+                        line.setOrientation(LinearLayout.HORIZONTAL);
+                        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.MATCH_PARENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT);
+                        lp.topMargin = dp(4);
+                        line.setLayoutParams(lp);
+                        grid.addView(line);
+                    }
+                    final ImageView iv = new ImageView(sCtx);
+                    iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                    iv.setBackground(round(0x1AFFFFFF, 9));
+                    LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(0, dp(84), 1f);
+                    ip.rightMargin = dp(4);
+                    iv.setLayoutParams(ip);
+                    line.addView(iv);
+                    loadThumb(iv, thumbs.get(i));
+                }
+                grid.addView(chip("打开网页版", 0x2E5B8CFF, 0xFFD3E1FF,
+                        () -> openUrl("/wall")));
             });
         }, "XhsSpyWall").start();
     }
 
-    static void renderLog() {
-        sContent.addView(head("日志"));
-        String[] names = {"boot", "float", "mini", "net", "crash"};
-        for (String n : names) {
-            sContent.addView(chip(n, 0x14FFFFFF, () -> openUrl("/log?n=" + n)));
-        }
-        sContent.addView(chip("查看全部", 0x33638DFF, () -> openUrl("/")));
+    static void loadThumb(final ImageView iv, final String url) {
+        new Thread(() -> {
+            Bitmap bm = null;
+            HttpURLConnection c = null;
+            try {
+                c = (HttpURLConnection) new URL(url).openConnection();
+                c.setConnectTimeout(8000);
+                c.setReadTimeout(10000);
+                c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10)");
+                if (c.getResponseCode() == 200) {
+                    bm = BitmapFactory.decodeStream(c.getInputStream());
+                }
+            } catch (Throwable ignored) {
+            } finally {
+                if (c != null) try { c.disconnect(); } catch (Throwable ignored) {}
+            }
+            final Bitmap b = bm;
+            if (b == null) return;
+            UI.post(() -> { try { iv.setImageBitmap(b); } catch (Throwable ignored) {} });
+        }, "XhsSpyThumb").start();
     }
 
+    // ------------------------------------------------------------ 日志
+
+    static void renderLog() {
+        sContent.addView(head("日志"));
+        final LinearLayout host = new LinearLayout(sCtx);
+        host.setOrientation(LinearLayout.VERTICAL);
+        sContent.addView(host);
+
+        String[] names = {"boot", "float", "mini", "net", "crash"};
+        LinearLayout btns = new LinearLayout(sCtx);
+        btns.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        blp.bottomMargin = dp(7);
+        btns.setLayoutParams(blp);
+        for (final String n : names) {
+            btns.addView(chip(n, 0x12FFFFFF, 0xAAFFFFFF, () -> showLog(host, n)));
+        }
+        sContent.addView(btns);
+        showLog(host, "float");
+    }
+
+    static File findLog(String name) {
+        File out = null;
+        try { out = XhsSpy.outDir(); } catch (Throwable ignored) {}
+        if (out == null) return null;
+        String[] cands = {name + ".log", name + ".txt", name};
+        for (String c : cands) {
+            File f = new File(out, c);
+            if (f.exists()) return f;
+        }
+        return null;
+    }
+
+    static void showLog(LinearLayout host, String name) {
+        host.removeAllViews();
+        File f = findLog(name);
+        if (f == null) {
+            host.addView(row("没有 " + name + " 日志", C_DIM, 10));
+            return;
+        }
+        host.addView(row(f.getName() + " · " + MiniPacker.human(f.length()), C_SUB, 9));
+        String tail = tail(f, 60);
+        TextView t = text(tail.isEmpty() ? "(空)" : tail, 0xC8FFFFFF, 9);
+        t.setTypeface(Typeface.MONOSPACE);
+        t.setTextIsSelectable(true);
+        t.setPadding(dp(6), dp(6), dp(6), dp(6));
+        t.setBackground(round(0x14FFFFFF, 8));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(4);
+        t.setLayoutParams(lp);
+        host.addView(t);
+    }
+
+    static String tail(File f, int lines) {
+        RandomAccessFile raf = null;
+        try {
+            raf = new RandomAccessFile(f, "r");
+            long len = raf.length();
+            long start = Math.max(0, len - 24 * 1024);
+            raf.seek(start);
+            byte[] buf = new byte[(int) (len - start)];
+            raf.readFully(buf);
+            String s = new String(buf, "UTF-8");
+            String[] arr = s.split("\n");
+            StringBuilder sb = new StringBuilder();
+            int from = Math.max(0, arr.length - lines);
+            for (int i = from; i < arr.length; i++) sb.append(arr[i]).append('\n');
+            return sb.toString();
+        } catch (Throwable t) {
+            return "读取失败：" + t;
+        } finally {
+            if (raf != null) try { raf.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    // ------------------------------------------------------------ 内存
+
     static void renderMem() {
+        sContent.addView(head("运行时内存"));
         try {
             Runtime r = Runtime.getRuntime();
             long total = r.totalMemory(), free = r.freeMemory(), max = r.maxMemory();
-            sContent.addView(head("运行时内存"));
-            sContent.addView(row("已分配 " + MiniPacker.human(total), 0xCCFFFFFF, 11));
-            sContent.addView(row("已使用 " + MiniPacker.human(total - free), 0xCCFFFFFF, 11));
-            sContent.addView(row("空闲   " + MiniPacker.human(free), 0xCCFFFFFF, 11));
-            sContent.addView(row("上限   " + MiniPacker.human(max), 0xCCFFFFFF, 11));
-            sContent.addView(row(String.format(Locale.US, "占用   %.1f%%",
-                    max > 0 ? (total - free) * 100.0 / max : 0), 0xFFFF7A8A, 12));
+            LinearLayout c = card();
+            c.addView(row("已分配   " + MiniPacker.human(total), C_TEXT, 11));
+            c.addView(row("已使用   " + MiniPacker.human(total - free), C_TEXT, 11));
+            c.addView(row("空闲     " + MiniPacker.human(free), C_TEXT, 11));
+            c.addView(row("上限     " + MiniPacker.human(max), C_TEXT, 11));
+            c.addView(row(String.format(Locale.US, "占用     %.1f%%",
+                    max > 0 ? (total - free) * 100.0 / max : 0), C_ACCENT, 12));
+            sContent.addView(c);
+            sContent.addView(chip("刷新", 0x12FFFFFF, 0x99FFFFFF, FloatingWindow::refresh));
         } catch (Throwable t) {
             sContent.addView(row("读不到：" + t, 0xFFFF6B6B, 11));
         }
     }
 
-    // ------------------------------------------------------------ 动作
+    // ------------------------------------------------------------ 跳网页
 
     static void openUrl(String path) {
         try {
@@ -602,40 +1067,5 @@ public class FloatingWindow {
         } catch (Throwable t) {
             MiniPacker.toast(sCtx, "没有可用浏览器");
         }
-    }
-
-    // ------------------------------------------------------------ 拖动
-
-    static void bindDrag(final View v, final WindowManager.LayoutParams lp) {
-        v.setOnTouchListener(new View.OnTouchListener() {
-            int downX, downY;
-            float touchX, touchY;
-            boolean moved = false;
-
-            @Override
-            public boolean onTouch(View view, MotionEvent e) {
-                switch (e.getAction()) {
-                    case MotionEvent.ACTION_DOWN:
-                        downX = lp.x;
-                        downY = lp.y;
-                        touchX = e.getRawX();
-                        touchY = e.getRawY();
-                        moved = false;
-                        return false;
-                    case MotionEvent.ACTION_MOVE:
-                        int dx = (int) (e.getRawX() - touchX);
-                        int dy = (int) (e.getRawY() - touchY);
-                        if (Math.abs(dx) > dp(6) || Math.abs(dy) > dp(6)) moved = true;
-                        if (!moved) return false;
-                        lp.x = downX + dx;
-                        lp.y = downY + dy;
-                        try { sWm.updateViewLayout(v, lp); } catch (Throwable ignored) {}
-                        return true;
-                    case MotionEvent.ACTION_UP:
-                        return moved;
-                }
-                return false;
-            }
-        });
     }
 }
