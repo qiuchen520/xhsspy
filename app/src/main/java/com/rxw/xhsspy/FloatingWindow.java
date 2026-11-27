@@ -508,11 +508,24 @@ public class FloatingWindow {
     // ------------------------------------------------------------ 小程序 / 小工具
 
     static void renderMinis(String type) {
-        List<MiniPacker.Mini> list;
-        try { list = MiniPacker.listByType(type); }
-        catch (Throwable t) { list = new ArrayList<>(); }
-        boolean tool = MiniPacker.TYPE_TOOL.equals(type);
+        final String t0 = type;
+        sContent.addView(head(MiniPacker.TYPE_TOOL.equals(type) ? "小工具" : "小程序"));
+        sContent.addView(row("正在扫描…", C_DIM, 11));
+        new Thread(() -> {
+            List<MiniPacker.Mini> got;
+            try { got = MiniPacker.listByType(t0); }
+            catch (Throwable t) { got = new ArrayList<>(); }
+            final List<MiniPacker.Mini> list = got;
+            UI.post(() -> {
+                if (sContent == null || !t0.equals(sCur)) return;
+                sContent.removeAllViews();
+                buildMiniCards(t0, list);
+            });
+        }, "XhsSpyMiniList").start();
+    }
 
+    static void buildMiniCards(String type, List<MiniPacker.Mini> list) {
+        boolean tool = MiniPacker.TYPE_TOOL.equals(type);
         sContent.addView(head((tool ? "小工具" : "小程序") + " · " + list.size() + " 个"));
         if (list.isEmpty()) {
             sContent.addView(row("还没有缓存\n去 App 里点开一个再回来", C_DIM, 11));
@@ -1050,10 +1063,44 @@ public class FloatingWindow {
             c.addView(row(String.format(Locale.US, "占用     %.1f%%",
                     max > 0 ? (total - free) * 100.0 / max : 0), C_ACCENT, 12));
             sContent.addView(c);
+
+            sContent.addView(head("性能开关 · 默认全关"));
+            sContent.addView(row("开着会拖慢整机，需要抓包时再打开", C_DIM, 9));
+            sContent.addView(switchRow("响应 body", "body", XhsSpy.sLogBody));
+            sContent.addView(switchRow("文件写入", "file", XhsSpy.sLogFile));
+            sContent.addView(switchRow("网络地址", "net", XhsSpy.sLogNet));
+
             sContent.addView(chip("刷新", 0x12FFFFFF, 0x99FFFFFF, FloatingWindow::refresh));
         } catch (Throwable t) {
             sContent.addView(row("读不到：" + t, 0xFFFF6B6B, 11));
         }
+    }
+
+    static View switchRow(String label, final String key, boolean on) {
+        LinearLayout rowv = new LinearLayout(sCtx);
+        rowv.setOrientation(LinearLayout.HORIZONTAL);
+        rowv.setGravity(Gravity.CENTER_VERTICAL);
+        rowv.setPadding(dp(8), dp(7), dp(8), dp(7));
+        rowv.setBackground(glass(on ? 0x1FFF6B85 : 0x10FFFFFF, 9, 0x18FFFFFF));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(5);
+        rowv.setLayoutParams(lp);
+
+        TextView t = text(label, on ? 0xFFFFD6DD : 0xAAFFFFFF, 11);
+        rowv.addView(t, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView v = bold(on ? "开" : "关", on ? 0xFFFF8FA3 : 0x77FFFFFF, 11);
+        rowv.addView(v);
+
+        rowv.setOnClickListener(x -> {
+            boolean now = !on;
+            XhsSpy.setSwitch(key, now ? "1" : "0");
+            refresh();
+        });
+        return rowv;
     }
 
     // ------------------------------------------------------------ 跳网页
