@@ -735,6 +735,21 @@ public class FloatingWindow {
         jsBtn.setLayoutParams(jlp);
         sContent.addView(jsBtn);
 
+        TextView reloadBtn = chip("刷新页面", 0x2E22C55E, 0xFFC8F2D8, () -> {
+            new Thread(() -> {
+                String r = XhsSpy.evalJs("location.reload()", 3000);
+                sVarsCache = null;
+                UI.post(() -> MiniPacker.toast(sCtx, "已刷新页面"));
+            }, "XhsSpyReload").start();
+        });
+        LinearLayout.LayoutParams rlb = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        rlb.bottomMargin = dp(7);
+        rlb.leftMargin = dp(5);
+        reloadBtn.setLayoutParams(rlb);
+        sContent.addView(reloadBtn);
+
         // 列表容器
         sVarList = new LinearLayout(sCtx);
         sVarList.setOrientation(LinearLayout.VERTICAL);
