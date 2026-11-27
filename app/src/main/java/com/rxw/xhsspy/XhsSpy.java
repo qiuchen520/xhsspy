@@ -169,8 +169,10 @@ public class XhsSpy implements IXposedHookLoadPackage {
                         String proc = currentProcessName();
                         boolean main = proc == null || !proc.contains(":");
                         log("boot", "process=" + proc + " main=" + main);
+                        // 每个进程都起服务：小工具跑在 :privileged_processN 里，
+                        // 主进程读不到那边的 WebView，只能各自开端口、互相转发。
                         if (main) {
-                            startServer();
+                            startServer(true);
                             new Thread(() -> {
                                 try {
                                     Thread.sleep(25000);
@@ -179,6 +181,9 @@ public class XhsSpy implements IXposedHookLoadPackage {
                                     log("crash", "sweep thread " + t);
                                 }
                             }, "XhsSpySweep").start();
+                        } else {
+                            // 子进程先不起，等真的有 WebView 注册了再说，省端口
+                            log("boot", "子进程待命，等 WebView");
                         }
                     }
                 });
@@ -204,6 +209,10 @@ public class XhsSpy implements IXposedHookLoadPackage {
 
     static void registerWebView(Object wv) {
         if (wv == null) return;
+        // 子进程第一次出现 WebView 时，把自己的服务拉起来
+        if (sServer == null && sApp != null) {
+            try { startServer(false); } catch (Throwable ignored) {}
+        }
         synchronized (sWebViews) {
             if (!sWebViews.contains(wv)) {
                 sWebViews.add(wv);
@@ -297,8 +306,19 @@ public class XhsSpy implements IXposedHookLoadPackage {
         sPageImgs.clear();
     }
 
-    /** 在第一个可用的 WebView 上执行一段 JS，返回结果字符串（已解一层 JSON 转义） */
+    /**
+     * 在任意进程里执行一段 JS。
+     * 先问本进程，本进程没有 WebView 就顺着 8686..8695 挨个问一遍。
+     * 小工具跑在 :privileged_processN，主进程的 sWebViews 是空的，必须转发。
+     */
     public static String evalJs(String code, long timeoutMs) {
+        String r = evalJsLocal(code, timeoutMs);
+        if (r != null) return r;
+        return evalJsRemote(code, timeoutMs);
+    }
+
+    /** 只在本进程的 WebView 上跑，不转发（/evals 接口内部用，避免来回死循环） */
+    public static String evalJsLocal(String code, long timeoutMs) {
         java.util.List<Object> snapshot;
         synchronized (sWebViews) { snapshot = new java.util.ArrayList<>(sWebViews); }
         if (snapshot.isEmpty()) return null;
@@ -335,6 +355,50 @@ public class XhsSpy implements IXposedHookLoadPackage {
             }
         }
         return null;
+    }
+
+    /** 挨个端口问过去，谁手里有 WebView 谁答 */
+    static String evalJsRemote(String code, long timeoutMs) {
+        int self = (sServer != null) ? sServer.port : -1;
+        for (int p = MiniServer.PORT_START;
+             p < MiniServer.PORT_START + MiniServer.PORT_TRIES; p++) {
+            if (p == self) continue;
+            java.net.HttpURLConnection c = null;
+            try {
+                c = (java.net.HttpURLConnection)
+                        new java.net.URL("http://127.0.0.1:" + p + "/evals").openConnection();
+                c.setConnectTimeout(250);
+                c.setReadTimeout((int) Math.max(1200, Math.min(timeoutMs, 5000)));
+                c.setRequestMethod("POST");
+                c.setDoOutput(true);
+                c.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
+                c.getOutputStream().write(code.getBytes("UTF-8"));
+                if (c.getResponseCode() != 200) continue;
+                java.io.InputStream is = c.getInputStream();
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = is.read(buf)) > 0) bo.write(buf, 0, n);
+                is.close();
+                org.json.JSONObject o = new org.json.JSONObject(bo.toString("UTF-8"));
+                if (o.optBoolean("ok", false)) return o.optString("v", "null");
+            } catch (Throwable ignored) {
+            } finally {
+                if (c != null) try { c.disconnect(); } catch (Throwable ignored) {}
+            }
+        }
+        return null;
+    }
+
+    /** /evals 的落点：跑完包成 {"ok":true,"v":"..."} */
+    public static String evalJsViaHttp(String code) {
+        String r = evalJsLocal(code, 5000);
+        if (r == null) return "{\"ok\":false,\"err\":\"本进程没有 WebView\"}";
+        try {
+            return "{\"ok\":true,\"v\":" + org.json.JSONObject.quote(r) + "}";
+        } catch (Throwable t) {
+            return "{\"ok\":false,\"err\":\"" + t + "\"}";
+        }
     }
 
     /** 页面变量 + localStorage 的快照（JS 侧枚举，结果是一段 JSON） */
@@ -425,10 +489,10 @@ public class XhsSpy implements IXposedHookLoadPackage {
 
     // ------------------------------------------------------------ 启动 HTTP + MCP 服务
 
-    static void startServer() {
+    static synchronized void startServer(boolean main) {
         if (sServer != null) return;
         try {
-            startImagePoller();
+            if (main) startImagePoller();
             File base = null;
             try { base = sApp.getFilesDir().getParentFile(); } catch (Throwable ignored) {}
             File ext = null;
@@ -448,11 +512,13 @@ public class XhsSpy implements IXposedHookLoadPackage {
                 sServer = s;
                 log("boot", "HTTP 服务已启动: " + s.localUrl()
                         + "  lan=" + s.lanBound + "  port=" + s.port);
-                // 监控小程序包目录，抓到新的就提示
-                MiniPacker.startWatcher(sApp);
-                // 悬浮窗
-                if (!"0".equals(System.getenv("XHSSPY_NO_FLOAT"))) {
-                    FloatingWindow.show(sApp);
+                if (main) {
+                    // 监控小程序包目录，抓到新的就提示
+                    MiniPacker.startWatcher(sApp);
+                    // 悬浮窗
+                    if (!"0".equals(System.getenv("XHSSPY_NO_FLOAT"))) {
+                        FloatingWindow.show(sApp);
+                    }
                 }
             } else {
                 log("crash", "HTTP 服务启动失败（端口全占用）");
