@@ -1025,12 +1025,6 @@ public class MiniServer {
         return sb.toString();
     }
 
-    private static String human(long n) {
-        if (n < 1024) return n + " B";
-        if (n < 1048576) return String.format(java.util.Locale.US, "%.1f KB", n / 1024.0);
-        return String.format(java.util.Locale.US, "%.1f MB", n / 1048576.0);
-    }
-
     private org.json.JSONObject text(String s) throws Exception {
         org.json.JSONArray arr = new org.json.JSONArray();
         org.json.JSONObject c = new org.json.JSONObject();
