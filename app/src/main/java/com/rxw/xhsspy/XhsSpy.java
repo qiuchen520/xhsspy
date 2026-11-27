@@ -926,14 +926,42 @@ public class XhsSpy implements IXposedHookLoadPackage {
                 } catch (Throwable ignored) {}
             }
         };
-        try {
-            XposedHelpers.findAndHookMethod(android.app.Activity.class,
-                    "onResume", grab);
-        } catch (Throwable ignored) {}
+        String[] noArg = {"onResume", "onStart", "onPostResume", "onPause"};
+        for (String m : noArg) {
+            try {
+                XposedHelpers.findAndHookMethod(android.app.Activity.class, m, grab);
+            } catch (Throwable ignored) {}
+        }
         try {
             XposedHelpers.findAndHookMethod(android.app.Activity.class,
                     "onCreate", android.os.Bundle.class, grab);
         } catch (Throwable ignored) {}
+        try {
+            XposedHelpers.findAndHookMethod(android.app.Activity.class,
+                    "onWindowFocusChanged", boolean.class, grab);
+        } catch (Throwable ignored) {}
+
+        // 兜底：每 8 秒把当前 Activity 的 View 树扫一遍，
+        // 不管容器调不调生命周期，WebView 长出来就能抓到。
+        Thread tick = new Thread(() -> {
+            while (true) {
+                try { Thread.sleep(8000); } catch (Throwable ignored) {}
+                try {
+                    android.app.Activity a = sActivity;
+                    if (a == null) continue;
+                    int n = harvestFromActivity(a);
+                    if (n > 0) {
+                        java.util.List<Object> snap;
+                        synchronized (sWebViews) {
+                            snap = new java.util.ArrayList<>(sWebViews);
+                        }
+                        log("webview", "定时扫描 " + n + " 个，池内 " + snap.size());
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }, "XhsSpyWvTick");
+        tick.setDaemon(true);
+        tick.start();
     }
 
     /** 强制当前 Activity 转屏。mode: land / port / auto / toggle */
@@ -1137,7 +1165,34 @@ public class XhsSpy implements IXposedHookLoadPackage {
 
     // ------------------------------------------------------------ WebView
 
+    /** 已知的 WebView 实现类名，先记下来直接 hook，不靠猜 */
+    static final String[] WV_CLASSES = {
+            "com.xiaohongshu.webkit.WebView",          // R1 内核（实测）
+            "com.xiaohongshu.webkit.WebViewProxy",
+            "com.tencent.smtt.sdk.WebView",            // X5 兜底
+            "android.webkit.WebView",
+    };
+
     static void hookWebView(ClassLoader cl) {
+        // 按类名挨个 hook，找得到就挂上，找不到算它不存在
+        for (final String cn : WV_CLASSES) {
+            try {
+                Class<?> c = XposedHelpers.findClass(cn, cl);
+                if (c == null) continue;
+                XposedBridge.hookAllConstructors(c, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam p) {
+                        try {
+                            registerWebView(p.thisObject);
+                        } catch (Throwable ignored) {}
+                    }
+                });
+                log("webview", "已 hook " + cn);
+            } catch (Throwable t) {
+                // 类不存在很正常，不写日志免得刷屏
+            }
+        }
+
         // 先把所有 WebView 实例登记下来 —— 不管它是怎么被 load 的
         try {
             XposedBridge.hookAllConstructors(android.webkit.WebView.class,
