@@ -246,7 +246,7 @@ public class MiniPacker {
                 cv.put(MediaStore.Downloads.DISPLAY_NAME, name);
                 cv.put(MediaStore.Downloads.MIME_TYPE, "application/zip");
                 cv.put(MediaStore.Downloads.RELATIVE_PATH,
-                        Environment.DIRECTORY_DOWNLOAD + "/XhsSpy");
+                        Environment.DIRECTORY_DOWNLOADS + "/XhsSpy");
                 cv.put(MediaStore.Downloads.IS_PENDING, 1);
                 Uri uri = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
                 if (uri == null) return null;
@@ -367,8 +367,8 @@ public class MiniPacker {
                         }
                     }
                     first = false;
-                } catch (Throwable t) {
-                    XhsSpy.log("crash", "watcher " + t);
+                } catch (Throwable ex) {
+                    XhsSpy.log("crash", "watcher " + ex);
                 }
             }
         }, "XhsSpyMiniWatch");
