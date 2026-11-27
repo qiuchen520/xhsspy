@@ -29,20 +29,27 @@ jobs:
           fi
           ls -la
 
-      # 源码用 tar.gz + base64 传上来，这里还原成真实文件
-      - name: Restore patched sources
-        id: restore
+      # 固定签名：仓库里没有就生成一个，并提交回去。
+      # 之后每次构建都用同一张证书，手机上可以直接覆盖安装。
+      - name: Ensure fixed keystore
         run: |
-          if [ -f _src.b64 ]; then
-            base64 -d _src.b64 > /tmp/src.tgz
-            tar xzf /tmp/src.tgz -C .
-            rm -f _src.b64
-            echo "patched=true" >> $GITHUB_OUTPUT
-            echo "已用 _src.b64 覆盖源码"
+          if [ ! -f app/xhsspy.jks ]; then
+            echo "生成固定 keystore"
+            keytool -genkeypair -noprompt \
+              -keystore app/xhsspy.jks \
+              -alias xhsspy \
+              -keyalg RSA -keysize 2048 -validity 36500 \
+              -storepass xhsspyfixed -keypass xhsspyfixed \
+              -dname "CN=XhsSpy, OU=rxw, O=rxw, L=Beijing, ST=Beijing, C=CN"
+            git config user.name "xhsspy-bot"
+            git config user.email "bot@users.noreply.github.com"
+            git add -f app/xhsspy.jks
+            git commit -m "chore: 固定签名 keystore [skip ci]" || true
+            git push origin HEAD:main || echo "push 失败，下次再试"
           else
-            echo "patched=false" >> $GITHUB_OUTPUT
+            echo "keystore 已存在"
           fi
-          ls -la app/src/main/java/com/rxw/xhsspy/
+          keytool -list -v -keystore app/xhsspy.jks -storepass xhsspyfixed | grep -E "Alias|SHA256|Valid" | head -6
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -84,13 +91,3 @@ jobs:
           files: out/*.apk
           draft: false
           prerelease: false
-
-      # 构建完把还原出来的真实源码提交回去，仓库保持干净
-      - name: Sync sources back
-        if: steps.restore.outputs.patched == 'true'
-        run: |
-          git config user.name "xhsspy-bot"
-          git config user.email "bot@users.noreply.github.com"
-          git add -A
-          git commit -m "chore: sync generated sources [skip ci]" || echo "nothing to commit"
-          git push || echo "push skipped"
