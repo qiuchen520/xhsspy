@@ -11,8 +11,9 @@ android {
         minSdk 21
         // 模块本体其实不参与运行时存储策略，给高一点避免新版系统拒装
         targetSdk 33
-        versionCode 1
-        versionName "1.0"
+        // 用 CI 的构建号当 versionCode，每次递增，覆盖安装不会卡住
+        versionCode (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
+        versionName "1." + (System.getenv("GITHUB_RUN_NUMBER") ?: "1")
     }
 
     // 模块不是上架应用，不需要 Play 那套 targetSdk 规则
