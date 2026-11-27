@@ -182,8 +182,10 @@ public class XhsSpy implements IXposedHookLoadPackage {
                                 }
                             }, "XhsSpySweep").start();
                         } else {
-                            // 子进程先不起，等真的有 WebView 注册了再说，省端口
-                            log("boot", "子进程待命，等 WebView");
+                            // 子进程也直接起服务：小工具的 WebView 可能不是
+                            // android.webkit.WebView（小红书有 R1 内核），
+                            // 等注册再起会永远等不到。
+                            startServer(false);
                         }
                     }
                 });
@@ -388,6 +390,96 @@ public class XhsSpy implements IXposedHookLoadPackage {
             }
         }
         return null;
+    }
+
+    /**
+     * 列出本进程里所有已加载的、名字命中 q 的类。
+     * 靠 Debug.getLoadedClasses()，需要 App 是 debuggable（LSPatch 勾了允许调试）。
+     */
+    public static String loadedClasses(String q) {
+        String key = (q == null || q.isEmpty()) ? "webview" : q.toLowerCase(java.util.Locale.US);
+        StringBuilder sb = new StringBuilder();
+        int hit = 0, total = 0;
+        try {
+            Class<?>[] cls = android.os.Debug.getLoadedClasses();
+            total = cls == null ? 0 : cls.length;
+            if (cls != null) {
+                for (Class<?> c : cls) {
+                    if (c == null) continue;
+                    String n = c.getName();
+                    if (n == null) continue;
+                    if (!n.toLowerCase(java.util.Locale.US).contains(key)) continue;
+                    hit++;
+                    sb.append(n);
+                    try {
+                        Class<?> sup = c.getSuperclass();
+                        if (sup != null) sb.append("  <- ").append(sup.getName());
+                    } catch (Throwable ignored) {}
+                    sb.append('\n');
+                }
+            }
+        } catch (Throwable t) {
+            return "{\"error\":\"" + t + "\",\"hint\":\"Debug.getLoadedClasses 需要 debuggable\"}";
+        }
+        return "{\"q\":\"" + key + "\",\"total\":" + total
+                + ",\"hit\":" + hit + ",\"list\":"
+                + org.json.JSONObject.quote(sb.toString()) + "}";
+    }
+
+    /** 把所有进程的加载类都捞一遍，一个端口一段 */
+    public static String loadedClassesAll(String q) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("== 本进程 == ").append(osPid()).append('\n');
+        sb.append(unwrapClasses(loadedClasses(q))).append('\n');
+        int self = (sServer != null) ? sServer.port : -1;
+        for (int p = MiniServer.PORT_START;
+             p < MiniServer.PORT_START + MiniServer.PORT_TRIES; p++) {
+            if (p == self) continue;
+            String body = httpGet("http://127.0.0.1:" + p + "/classes?q="
+                    + java.net.URLEncoder.encode(q == null ? "webview" : q));
+            if (body == null) continue;
+            String pretty = unwrapClasses(body);
+            if (pretty == null || pretty.trim().isEmpty()) continue;
+            sb.append("== 端口 ").append(p).append(" ==\n").append(pretty).append('\n');
+        }
+        return sb.toString();
+    }
+
+    static String osPid() {
+        try { return String.valueOf(android.os.Process.myPid()); } catch (Throwable t) { return "?"; }
+    }
+
+    static String unwrapClasses(String json) {
+        if (json == null) return null;
+        try {
+            org.json.JSONObject o = new org.json.JSONObject(json);
+            int hit = o.optInt("hit", 0);
+            if (hit == 0) return null;
+            return "(命中 " + hit + " / 共 " + o.optInt("total", 0) + ")\n" + o.optString("list", "");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    static String httpGet(String url) {
+        java.net.HttpURLConnection c = null;
+        try {
+            c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            c.setConnectTimeout(250);
+            c.setReadTimeout(4000);
+            if (c.getResponseCode() != 200) return null;
+            java.io.InputStream is = c.getInputStream();
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = is.read(buf)) > 0) bo.write(buf, 0, n);
+            is.close();
+            return bo.toString("UTF-8");
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            if (c != null) try { c.disconnect(); } catch (Throwable ignored) {}
+        }
     }
 
     /** /evals 的落点：跑完包成 {"ok":true,"v":"..."} */
