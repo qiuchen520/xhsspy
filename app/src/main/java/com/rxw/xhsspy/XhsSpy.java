@@ -226,6 +226,8 @@ public class XhsSpy implements IXposedHookLoadPackage {
         }
     }
 
+    static volatile boolean sHarvesting = false;
+
     /** 从一个 Activity 的 View 树里把 WebView 抠出来。不认类，认名字和 ViewGroup。 */
     static int harvestFromActivity(android.app.Activity a) {
         if (a == null) return 0;
@@ -493,8 +495,14 @@ public class XhsSpy implements IXposedHookLoadPackage {
         java.util.List<Object> snapshot;
         synchronized (sWebViews) { snapshot = new java.util.ArrayList<>(sWebViews); }
         if (snapshot.isEmpty()) return null;
+        // 一个个试，但总时长封顶。6 个 WebView 各等 6 秒就是 36 秒，
+        // 表现起来跟卡死一模一样，必须掐住。
+        long deadline = System.currentTimeMillis() + Math.max(800, timeoutMs);
         for (Object wv : snapshot) {
-            String r = evalOn(wv, code, timeoutMs);
+            long left = deadline - System.currentTimeMillis();
+            if (left < 200) break;
+            String r;
+            try { r = evalOn(wv, code, left); } catch (Throwable t) { continue; }
             if (r == null) continue;
             try {
                 Object o = new org.json.JSONTokener(r).nextValue();
@@ -720,7 +728,7 @@ public class XhsSpy implements IXposedHookLoadPackage {
         try {
             c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
             c.setConnectTimeout(250);
-            c.setReadTimeout(4000);
+            c.setReadTimeout(1500);
             if (c.getResponseCode() != 200) return null;
             java.io.InputStream is = c.getInputStream();
             java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
@@ -885,6 +893,8 @@ public class XhsSpy implements IXposedHookLoadPackage {
                     final android.app.Activity a = (android.app.Activity) p.thisObject;
                     if (a == null) return;
                     sActivity = a;
+                    if (sHarvesting) return;
+                    sHarvesting = true;
                     // 页面加载完才长得出 WebView，隔一会儿扫两轮 View 树
                     for (long delay : new long[]{900L, 3500L}) {
                         new Thread(() -> {
@@ -895,6 +905,10 @@ public class XhsSpy implements IXposedHookLoadPackage {
                             } catch (Throwable ignored) {}
                         }, "XhsSpyHarvest").start();
                     }
+                    new Thread(() -> {
+                        try { Thread.sleep(5000); } catch (Throwable ignored) {}
+                        sHarvesting = false;
+                    }, "XhsSpyHarvestReset").start();
                 } catch (Throwable ignored) {}
             }
         };
