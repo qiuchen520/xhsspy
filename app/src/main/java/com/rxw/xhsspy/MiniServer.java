@@ -58,16 +58,28 @@ public class MiniServer {
     private final Runnable onSweep;
 
     public int port = PORT_START;
+
+    public boolean isSub() { return portBase != PORT_START; }
     public boolean lanBound = false;
 
     private ServerSocket ss;
     private final ExecutorService pool = Executors.newFixedThreadPool(4);
     private volatile boolean running = false;
 
+    /** 子进程用的端口起点，和主进程的 8686..8695 完全隔开 */
+    public static final int PORT_BASE_SUB = 8700;
+
+    private final int portBase;
+
     public MiniServer(File[] roots, String token, Runnable onSweep) {
+        this(roots, token, onSweep, PORT_START);
+    }
+
+    public MiniServer(File[] roots, String token, Runnable onSweep, int portBase) {
         this.roots = roots == null ? new File[0] : roots;
         this.token = token == null ? "" : token.trim();
         this.onSweep = onSweep;
+        this.portBase = portBase <= 0 ? PORT_START : portBase;
     }
 
     // ------------------------------------------------------------ 启停
@@ -75,7 +87,7 @@ public class MiniServer {
     public boolean start() {
         // 先试 0.0.0.0（同一 WiFi 下电脑也能访问），失败再退 127.0.0.1
         for (int i = 0; i < PORT_TRIES && !running; i++) {
-            int p = PORT_START + i;
+            int p = portBase + i;
             try {
                 ServerSocket s = new ServerSocket();
                 s.setReuseAddress(true);
@@ -85,7 +97,7 @@ public class MiniServer {
         }
         if (!running) {
             for (int i = 0; i < PORT_TRIES && !running; i++) {
-                int p = PORT_START + i;
+                int p = portBase + i;
                 try {
                     ServerSocket s = new ServerSocket();
                     s.setReuseAddress(true);
