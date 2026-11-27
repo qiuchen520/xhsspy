@@ -98,12 +98,41 @@ public class MiniPacker {
 
     // ------------------------------------------------------------ 扫描
 
-    public static List<Mini> list() {
+    // 扫一遍要递归 count 所有文件，125 个小工具目录下很贵，缓存 60 秒
+    static volatile List<Mini> sCache = null;
+    static volatile long sCacheAt = 0;
+    static final long CACHE_MS = 60000;
+
+    public static List<Mini> list() { return list(false); }
+
+    public static List<Mini> listFresh() { return list(true); }
+
+    static synchronized List<Mini> list(boolean force) {
+        long now = System.currentTimeMillis();
+        if (!force && sCache != null && now - sCacheAt < CACHE_MS) return sCache;
         List<Mini> out = new ArrayList<>();
         scanRoot(BASE_APP, TYPE_APP, out);
         scanRoot(BASE_TOOL, TYPE_TOOL, out);
         out.sort((a, b) -> Long.compare(b.mtime, a.mtime));
+        sCache = out;
+        sCacheAt = now;
         return out;
+    }
+
+    public static synchronized void invalidate() {
+        sCache = null;
+        sCacheAt = 0;
+    }
+
+    /** 只列目录名，不递归。用来判断有没有新包，代价极低 */
+    static String dirSig(File base) {
+        File[] ks;
+        try { ks = base.listFiles(); } catch (Throwable t) { return ""; }
+        if (ks == null) return "";
+        ArrayList<String> names = new ArrayList<>();
+        for (File k : ks) if (k.isDirectory()) names.add(k.getName());
+        java.util.Collections.sort(names);
+        return names.toString();
     }
 
     public static List<Mini> listByType(String type) {
@@ -458,10 +487,15 @@ public class MiniPacker {
         sWatching = true;
         Thread th = new Thread(() -> {
             boolean first = true;
+            String lastSig = dirSig(BASE_APP) + "|" + dirSig(BASE_TOOL);
             while (true) {
                 try {
-                    Thread.sleep(15000);
-                    for (Mini m : list()) {
+                    Thread.sleep(20000);
+                    String sig = dirSig(BASE_APP) + "|" + dirSig(BASE_TOOL);
+                    if (sig.equals(lastSig)) continue;
+                    lastSig = sig;
+                    invalidate();
+                    for (Mini m : listFresh()) {
                         String key = m.type + ":" + m.appid;
                         if (sKnown.add(key)) {
                             if (first) continue;
