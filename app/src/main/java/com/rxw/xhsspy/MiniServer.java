@@ -837,6 +837,11 @@ public class MiniServer {
                 "code"));
         arr.put(tool("process_mem", "查看当前进程的内存占用：已分配 / 已用 / 上限 / 百分比。"));
         arr.put(tool("roots", "列出本服务允许访问的根目录。"));
+        arr.put(tool("switches", "查看模块的性能开关状态：logBody / logFile / logNet，默认全关。"));
+        arr.put(tool("set_switch", "打开或关闭一个性能开关。开着会拖慢手机，抓包时才需要。",
+                prop("name", "string", "开关名：body / file / net"),
+                prop("value", "string", "on 或 off"),
+                "name", "value"));
 
         return arr;
     }
@@ -905,6 +910,9 @@ public class MiniServer {
                 case "sweep":      if (onSweep != null) onSweep.run();
                                    return text("已触发扫描，稍后调用 packages 查看结果。");
                 case "packages":   return text(toolPackages());
+                case "switches": return text(XhsSpy.switches());
+                case "set_switch": return text(XhsSpy.setSwitch(
+                        a.optString("name"), a.optString("value")));
                 case "roots":      return text(toolRoots());
                 case "js_vars":    return text(VarsPanel.snapshot().toString());
                 case "js_set":     return text(VarsPanel.set(a.optString("scope", "window"),
