@@ -438,42 +438,37 @@ public class MiniServer {
         b.append("<p class=hint>共 <b>").append(list.size())
          .append("</b> 个小程序。点「下载源码」拿 zip，点「分享」直接弹系统分享面板。</p>");
         if (list.isEmpty()) {
-            b.append("<p>还没抓到。<br>进小红书打开任意小程序，玩十几秒，回来刷新。<br>"
-                    + "源码落在 <code>" + MiniPacker.BASE.getAbsolutePath() + "</code></p>");
+            b.append("<p>还没抓到。<br>进小红书打开任意小程序，玩十几秒，回来刷新。<br>源码落在 ");
+            b.append("<code>").append(MiniPacker.BASE.getAbsolutePath()).append("</code></p>");
         }
         for (MiniPacker.Mini m : list) {
-            String name = m.name == null || m.name.isEmpty() ? m.appid : m.name;
+            String name = (m.name == null || m.name.isEmpty()) ? m.appid : m.name;
+            String href = "/mini/pack?" + k(q) + "&appid=" + enc(m.appid);
+            String href2 = "/mini/share?" + k(q) + "&appid=" + enc(m.appid);
             b.append("<div class=listitem>");
             b.append("<div class=li-h><b>").append(esc(name)).append("</b>");
             b.append("<span class=dim>").append(esc(m.version)).append("</span></div>");
-            b.append("<div class=li-d">").append(esc(m.appid))
-             .append(" · ").append(human(m.bytes))
-             .append(" · ").append(m.files).append(" 个文件");
+            b.append("<div class=li-d>").append(esc(m.appid));
+            b.append(" · ").append(human(m.bytes));
+            b.append(" · ").append(m.files).append(" 个文件");
             if (m.hasSource) b.append(" · <span class=ok>含 source/</span>");
             else b.append(" · <span class=bad>无 source/</span>");
             b.append("</div><div class=li-a>");
-            b.append("<a class=chip href=\"/mini/pack?").append(k(q))
-             .append("&appid=").append(enc(m.appid)).append("\">下载源码 zip</a>");
-            b.append("<a class=chip href=\"/mini/share?").append(k(q))
-             .append("&appid=").append(enc(m.appid)).append("\">打包并分享</a>");
-            b.append("<a class=chip href=\"/ls?").append(k(q))
-             .append("&p=").append(enc(m.path)).append("\">浏览目录</a>");
+            b.append("<a class=chip href=").append(esc(href)).append(">下载源码 zip</a>");
+            b.append("<a class=chip href=").append(esc(href2)).append(">打包并分享</a>");
+            b.append("<a class=chip href=").append(esc("/ls?" + k(q) + "&p=" + enc(m.path))).append(">浏览目录</a>");
             b.append("</div></div>");
         }
-        b.append(BASE_INFO);
+        b.append("<h2>源码在哪</h2><pre class=log>");
+        b.append("/data/data/com.xingin.xhs/files/redmpV2/release/&lt;appid&gt;/&lt;hash&gt;/source/");
+        b.append("<br>  app.json            路由表");
+        b.append("<br>  service.js          业务逻辑");
+        b.append("<br>  pages/*/            各页面的 .render.js 和 .css");
+        b.append("<br>  components.js");
+        b.append("<br>  project.config.json</pre>");
+        b.append("<p class=hint>打包出来的 zip 里是 &lt;appid&gt;/&lt;hash&gt;/ 整个目录，源码在 source/ 子目录。zip 同时会存一份到手机「下载/XhsSpy」。</p>");
         sendHtml(out, 200, page("小程序源码", b.toString()));
     }
-
-    static final String BASE_INFO =
-            "<h2>源码在哪</h2><pre class=log>/data/data/com.xingin.xhs/files/redmpV2/release/"
-          + "&lt;appid&gt;/&lt;hash&gt;/source/\n"
-          + "  ├── app.json        路由表\n"
-          + "  ├── service.js      业务逻辑\n"
-          + "  ├── pages/*/       各页面的 .render.js + .css\n"
-          + "  ├── components.js\n"
-          + "  └── project.config.json</pre>"
-          + "<p class=hint>打包出来的 zip 里是 <code>&lt;appid&gt;/&lt;hash&gt;/</code> 整个目录，"
-          + "源码在 <code>source/</code> 子目录。zip 同时会存一份到手机「下载/XhsSpy」。</p>";
 
     private void miniList(OutputStream out) throws IOException {
         org.json.JSONArray arr = new org.json.JSONArray();
@@ -483,7 +478,7 @@ public class MiniServer {
 
     private MiniPacker.Mini findByAppid(String appid) {
         for (MiniPacker.Mini m : MiniPacker.list()) {
-            if (m.appid.equals(appid)) return m;
+            if (appid != null && m.appid.equals(appid)) return m;
         }
         return null;
     }
@@ -498,8 +493,7 @@ public class MiniServer {
         try {
             File zip = MiniPacker.pack(XhsSpy.sApp, m);
             MiniPacker.saveToDownloads(XhsSpy.sApp, zip);
-            XhsSpy.log("mini", "packed " + m.appid + " -> " + zip.getAbsolutePath()
-                    + " (" + MiniPacker.human(zip.length()) + ")");
+            XhsSpy.log("mini", "packed " + m.appid + " -> " + zip.getAbsolutePath());
             sendFile(out, zip);
         } catch (Exception e) {
             sendHtml(out, 500, page("打包失败", "<p>" + esc(String.valueOf(e)) + "</p>"));
@@ -514,9 +508,7 @@ public class MiniServer {
             return;
         }
         String r = MiniPacker.packAndShare(XhsSpy.sApp, m, true);
-        sendHtml(out, 200, page("已分享",
-                "<p>" + esc(r) + "</p><p><a href=\"/mini\">返回</a></p>"
-                + "<meta http-equiv=refresh content=\"1;url=/mini\">"));
+        sendHtml(out, 200, page("已分享", "<p>" + esc(r) + "</p><p><a href=" + "/mini" + ">返回</a></p>"));
     }
 
     /** 代下载网络图片，带上小工具需要的 Referer */
