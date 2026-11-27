@@ -401,7 +401,9 @@ public class XhsSpy implements IXposedHookLoadPackage {
         StringBuilder sb = new StringBuilder();
         int hit = 0, total = 0;
         try {
-            Class<?>[] cls = android.os.Debug.getLoadedClasses();
+            // hidden API，直接调编译不过，走 Xposed 的反射
+            Class<?>[] cls = (Class<?>[]) XposedHelpers.callStaticMethod(
+                    android.os.Debug.class, "getLoadedClasses");
             total = cls == null ? 0 : cls.length;
             if (cls != null) {
                 for (Class<?> c : cls) {
