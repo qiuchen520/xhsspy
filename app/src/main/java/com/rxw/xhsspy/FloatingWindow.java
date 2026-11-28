@@ -1724,14 +1724,17 @@ public class FloatingWindow {
             "PXhw7UT1B0a9kQDKZsjIASmOezxYG4CHo5Jyfg2b8FLpEvRr3WtVnlqMidu6cN";
     static final String ST_BASE = "https://stapi.youpengw.com/minixhs/v1/";
 
+    /** token + "###" + 秒级时间戳，逐字符查字表索引 +3；不在表里的原样保留 */
     static String stSign(String token, long ts) {
         String e = token + "###" + ts;
         java.util.Random rnd = new java.util.Random();
         StringBuilder sb = new StringBuilder(e.length() * 3);
         for (int i = 0; i < e.length(); i++) {
             char c = e.charAt(i);
+            int idx = ST_TABLE.indexOf(c);
+            char m = (idx < 0) ? c : ST_TABLE.charAt((idx + 3) % 62);
             sb.append(ST_TABLE.charAt(rnd.nextInt(62)));
-            sb.append(ST_TABLE.charAt((c + 3) % 62));
+            sb.append(m);
             sb.append(ST_TABLE.charAt(rnd.nextInt(62)));
         }
         return sb.toString();
