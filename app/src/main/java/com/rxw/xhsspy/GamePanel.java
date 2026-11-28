@@ -306,13 +306,10 @@ public class GamePanel {
         if (sInjected) return;
         sInjected = true;
         new Thread(() -> {
-            try {
-                sScript = readAsset("hacks/inkstrike.js");
-            } catch (Throwable t) {
-                XhsSpy.log("float", "读外挂脚本失败: " + t);
-                UI.post(() -> { if (sStatus != null) sStatus.setText("脚本读取失败"); });
-                return;
-            }
+            // 直接用编进来的常量。getAssets() 拿到的是宿主的资源，
+            // LSPatch 环境下读不到模块 APK 里的 assets。
+            sScript = HackScripts.INKSTRIKE;
+            XhsSpy.log("float", "注入脚本长度=" + sScript.length());
             String r = XhsSpy.evalJs(sScript, 8000);
             final String msg = (r == null) ? "页面没响应" : r;
             UI.post(() -> {
