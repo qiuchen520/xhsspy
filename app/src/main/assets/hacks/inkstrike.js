@@ -374,6 +374,180 @@
     }
   };
 
+
+  /* ================= 无后坐力 ================= */
+  H.nospread = {
+    on: function(){
+      H.capture.on();
+      if (window.__csHooked) return 'already';
+      window.__csHooked = 1;
+      window.__csOrig = window.curSpread;
+      window.curSpread = function(pl, w){
+        if (window.__noSpreadOn && pl && pl.isPlayer) return 0.004;
+        return window.__csOrig.apply(this, arguments);
+      };
+      window.__noSpreadOn = true;
+      return 'on';
+    },
+    off: function(){ window.__noSpreadOn = false; return 'off'; }
+  };
+
+  /* ================= 无限手雷/医疗 ================= */
+  H.nades = {
+    on: function(){
+      H.capture.on();
+      every('nades', 500, function(){
+        var p = window.__player;
+        if (!p) return;
+        p.meds = 99;
+        p.nades = {he: 99, flash: 99, smoke: 99, fire: 99};
+      });
+      return 'on';
+    },
+    off: function(){ stop('nades'); return 'off'; }
+  };
+
+  /* ================= 超级跳 ================= */
+  H.superjump = {
+    on: function(){
+      H.capture.on();
+      window.__sjOn = true;
+      every('sj', 60, function(){
+        var p = window.__player;
+        if (!p || !p.pos) return;
+        if (p.onGround && p.vel && Math.abs(p.vel.y) < 0.6) {
+          p.vel.y = 11;
+          p.onGround = false;
+        }
+      });
+      return 'on';
+    },
+    off: function(){ window.__sjOn = false; stop('sj'); return 'off'; }
+  };
+
+  /* ================= 自动瞄准 ================= */
+  H.aimbot = {
+    on: function(){
+      H.capture.on();
+      window.__aimOn = true;
+      every('aim', 16, function(){
+        var p = window.__player;
+        if (!p || !p.pos || !p.alive) return;
+        if (window.__flyOn) return;
+        var best = null, bd = 1e18, arr = window.__ents || [];
+        for (var i = 0; i < arr.length; i++) {
+          var t = arr[i];
+          if (t.team === 'blue' || !t.alive || !t.pos || t.isPlayer) continue;
+          var dx = t.pos.x - p.pos.x, dz = t.pos.z - p.pos.z;
+          var d2 = dx*dx + dz*dz;
+          if (d2 < bd && d2 < 2500) { bd = d2; best = t; }
+        }
+        if (!best) return;
+        var ex = best.pos.x - p.pos.x;
+        var ey = (best.pos.y + 1.45) - (p.pos.y + 1.6);
+        var ez = best.pos.z - p.pos.z;
+        var len = Math.sqrt(ex*ex + ey*ey + ez*ez);
+        if (len < 0.3) return;
+        var ty = Math.atan2(-ex, -ez);
+        var tp = Math.asin(Math.max(-1, Math.min(1, ey / len)));
+        var dy = ty - p.yaw;
+        while (dy > Math.PI) dy -= Math.PI * 2;
+        while (dy < -Math.PI) dy += Math.PI * 2;
+        p.yaw += dy * 0.45;
+        p.pitch += (tp - p.pitch) * 0.45;
+      });
+      return 'on';
+    },
+    off: function(){ window.__aimOn = false; stop('aim'); return 'off'; }
+  };
+
+  /* ================= 瞬移 ================= */
+  H.tp = {
+    on: function(){
+      H.capture.on();
+      window.__tpOn = true;
+      every('tp', 900, function(){
+        var p = window.__player;
+        if (!p || !p.pos || window.__flyOn) return;
+        var best = null, bd = 1e18, arr = window.__ents || [];
+        for (var i = 0; i < arr.length; i++) {
+          var t = arr[i];
+          if (t.team === 'blue' || !t.alive || !t.pos || t.isPlayer) continue;
+          var dx = t.pos.x - p.pos.x, dz = t.pos.z - p.pos.z;
+          var d2 = dx*dx + dz*dz;
+          if (d2 < bd) { bd = d2; best = t; }
+        }
+        if (!best) return;
+        // 落到敌人旁边 1.6 米，别贴脸卡模型
+        var ang = Math.atan2(p.pos.x - best.pos.x, p.pos.z - best.pos.z);
+        p.pos.x = best.pos.x + Math.sin(ang) * 1.6;
+        p.pos.z = best.pos.z + Math.cos(ang) * 1.6;
+        p.pos.y = best.pos.y;
+      });
+      return 'on';
+    },
+    off: function(){ window.__tpOn = false; stop('tp'); return 'off'; }
+  };
+
+  /* ================= 穿墙 ================= */
+  H.noclip = {
+    on: function(){
+      H.capture.on();
+      window.__noclipOn = true;
+      if (!window.__ovHooked) {
+        window.__ovHooked = 1;
+        window.__ovOrig = window.entOverlap;
+        window.entOverlap = function(e, x, y, z, near){
+          if (window.__noclipOn && e && e.isPlayer) return null;
+          return window.__ovOrig.apply(this, arguments);
+        };
+      }
+      return 'on';
+    },
+    off: function(){ window.__noclipOn = false; return 'off'; }
+  };
+
+  /* ================= 子弹时间（敌人变慢） ================= */
+  H.slowmo = {
+    on: function(){
+      H.capture.on();
+      window.__slowOn = true;
+      if (!window.__mvHook2) {
+        window.__mvHook2 = 1;
+        var prev = window.moveEntity;
+        window.moveEntity = function(e, dt){
+          if (window.__slowOn && e && !e.isPlayer && window.__player && e.team !== window.__player.team) {
+            return prev.call(this, e, dt * 0.28);
+          }
+          return prev.apply(this, arguments);
+        };
+      }
+      return 'on';
+    },
+    off: function(){ window.__slowOn = false; return 'off'; }
+  };
+
+  /* ================= 一枪爆头 ================= */
+  H.headshot = {
+    on: function(){
+      H.capture.on();
+      window.__headOn = true;
+      if (!window.__hdHooked) {
+        window.__hdHooked = 1;
+        var orig = window.__hurtOrig;
+        window.__hurtOrig = function(t, e, o, s, a, n, i){
+          if (window.__headOn && t && t.team && t.team !== 'blue' && !t.isPlayer) {
+            a = 'head';
+            e *= 2.2;
+          }
+          return orig.call(this, t, e, o, s, a, n, i);
+        };
+      }
+      return 'on';
+    },
+    off: function(){ window.__headOn = false; return 'off'; }
+  };
+
   /* ================= 一键全开 ================= */
   H.all = {
     on: function(){ H.god.on(); H.money.on(); H.ammo.on(); H.speed.set(3); return 'on'; },
