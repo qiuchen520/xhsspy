@@ -1160,6 +1160,20 @@ public class XhsSpy implements IXposedHookLoadPackage {
                             StringBuilder sb = new StringBuilder();
                             sb.append(m).append(' ').append(u);
 
+                            // 请求头：xhs.request 是宿主 API，会不会替我们带上小红书
+                            // 自己的身份（cookie / a1 / 小程序 session），全在这里。
+                            // 想判断“能不能脱离小红书自己发请求”，抓一次就清楚了。
+                            try {
+                                Object hs = XposedHelpers.callMethod(req, "headers");
+                                if (hs != null) {
+                                    String h = String.valueOf(hs);
+                                    if (h != null && h.length() > 4) {
+                                        sb.append("\n    hdr: ")
+                                          .append(clip(h.replace("\n", "\n         "), 3000));
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
+
                             // 请求体：小程序包下载、上报、登录都可能带
                             try {
                                 Object body = XposedHelpers.callMethod(req, "body");
