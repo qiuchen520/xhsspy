@@ -452,7 +452,7 @@ public class GamePanel {
         pt.setGravity(Gravity.CENTER);
         panic.addView(pt);
         panic.setOnClickListener(v -> {
-            for (String k : PLAY) sOn.put(k[0], false);
+            for (String[] k : PLAY) sOn.put(k[0], false);
             sSpeedMul = 1;
             refresh();
             run("window.__XHS_HACKS && window.__XHS_HACKS.panic()");
