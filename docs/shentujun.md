@@ -15,34 +15,33 @@ folder  shentujun
 
 ## 一、签名算法
 
-每个请求都要带三个头，缺一个就是 `{"code":0,"msg":"信息有误"}`：
-
-| 头 | 来源 |
-|---|---|
-| `token` | 登录后拿到的 JWT，直接原样放 |
-| `timestamp` | `Math.round(Date.now() / 1000)` **秒级**，不是毫秒 |
-| `sign` | 下面这段算出来的 |
+**只有 POST 才带签名，而且只有一个头：`sign`。** 没有 token 头、没有 timestamp 头。
+GET 请求什么都不带。
 
 ```js
 var t = "PXhw7UT1B0a9kQDKZsjIASmOezxYG4CHo5Jyfg2b8FLpEvRr3WtVnlqMidu6cN";  // 62 字表
 
-function sign(token, ts) {
-  var e = token + "###" + ts;      // 注意是三个 #
+function sign(token) {
+  var e = token + "###" + Math.round(Date.now() / 1000);   // 秒级
   var out = "";
   for (var i = 0; i < e.length; i++) {
-    out += rnd() + t[(e.charCodeAt(i) + 3) % 62] + rnd();
+    var c = e.charAt(i);
+    var idx = t.indexOf(c);                                // ← 查字表下标
+    var m = idx < 0 ? c : t.charAt((idx + 3) % 62);        // ← 下标 +3，不是 charCode
+    out += rnd() + m + rnd();
   }
   return out;
 }
-function rnd() {
-  return t[Math.floor(Math.random() * 62)];
-}
 ```
 
-也就是：**每个字符映射到字表偏移 +3，前后各插一个随机字符**。
-长度恒为 `(token.length + 4 + ts.length) * 3`。
+⚠️ **最容易写错的地方**：是 `字表.indexOf(字符)` 得到下标再 +3，
+不是 `charCode + 3`。写成 charCode 的话永远返回「信息有误」。
 
-特征：整个 sign 串里只会出现那 62 个字符，没有数字、没有大写 O 之类。
+字符不在 62 字表里（比如 JWT 里的 `-` `_` `.`）时**原样保留**，这一步不能省。
+
+因为只是「下标平移 + 首尾插随机字符」，服务端可以逆推：
+每 3 个字符取中间那个，再反向平移 -3，就还原出 `token###时间戳`。
+所以 sign 不是哈希，是可逆混淆。
 
 ---
 
@@ -121,6 +120,9 @@ getQuestions              题库
 ---
 
 ## 五、匿名 openid 是怎么回事
+
+**身份不在 header 里，在 `data` 里。** 每个业务接口都要带 `openid`（64 位 hex），
+外加 `version`、`appid`、`timestamp`（毫秒）。
 
 `/getOpenid` 不带 `code` 时：
 
