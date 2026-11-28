@@ -290,6 +290,27 @@
     off: function(){ stop('madness'); return 'off'; }
   };
 
+  /* ---------- 商店强制可买 ---------- */
+  H.shop = {
+    on: function(){
+      H.capture.on();
+      if (!window.__shopOrig) window.__shopOrig = window.canBuy;
+      window.canBuy = function(){ return true; };
+      return 'on';
+    },
+    off: function(){
+      if (window.__shopOrig) window.canBuy = window.__shopOrig;
+      window.__shopOrig = null;
+      return 'off';
+    }
+  };
+
+  /* ---------- 立即预热：注入完就把 capture 挂上 ---------- */
+  H.warmup = function(){
+    H.capture.on();
+    return 'warm';
+  };
+
   /* ---------- 状态查询 ---------- */
   H.status = function(){
     return JSON.stringify({
