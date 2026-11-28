@@ -67,6 +67,7 @@ public class GamePanel {
             {"oneshot", "秒杀"},
             {"fly",     "飞行"},
             {"madness", "敌人互殴"},
+            {"speed",   "移速 1x"},
             {"shop",    "强开商店"},
             {"all",     "一键全开"},
     };
@@ -273,6 +274,12 @@ public class GamePanel {
                 continue;
             }
 
+            if ("speed".equals(id)) {
+                sList.addView(chipBtn("移速 " + sSpeedMul + "x", sSpeedMul > 1,
+                        GamePanel::cycleSpeed));
+                continue;
+            }
+
             boolean on = Boolean.TRUE.equals(sOn.get(id));
             sList.addView(chipBtn(h[1], on, () -> toggle(id)));
         }
@@ -291,6 +298,29 @@ public class GamePanel {
         chip.setLayoutParams(lp);
         chip.setOnClickListener(v -> { try { act.run(); } catch (Throwable ignored) {} });
         return chip;
+    }
+
+    static int sSpeedMul = 1;
+
+    static void cycleSpeed() {
+        int[] arr = {1, 2, 3, 5, 8, 12};
+        int idx = 0;
+        for (int k = 0; k < arr.length; k++) if (arr[k] == sSpeedMul) { idx = k; break; }
+        sSpeedMul = arr[(idx + 1) % arr.length];
+        buildList();
+        final int m = sSpeedMul;
+        if (sStatus != null) sStatus.setText("移速 " + m + "x");
+        new Thread(() -> {
+            String r;
+            try {
+                r = XhsSpy.evalJs("window.__speedMul=" + m
+                        + "; window.__XHS_HACKS && window.__XHS_HACKS.speed.on()", 3000);
+            } catch (Throwable t) {
+                r = "失败";
+            }
+            final String msg = String.valueOf(r);
+            UI.post(() -> { if (sStatus != null) sStatus.setText("移速 " + m + "x  " + msg); });
+        }, "XhsSpySpeed").start();
     }
 
     static void hop(final String dir) {
