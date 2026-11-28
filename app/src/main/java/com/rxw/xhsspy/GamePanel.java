@@ -187,8 +187,9 @@ public class GamePanel {
         sRoot.setClipToPadding(false);
 
         sChip = makeChip();
+        // 固定宽度：展开时窗口会变宽，但胶囊本身不能被拉长
         sRoot.addView(sChip, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(CAP_H)));
+                dp(CAP_W), dp(CAP_H)));
 
         sPanel = makePanel();
         sRoot.addView(sPanel, new LinearLayout.LayoutParams(
