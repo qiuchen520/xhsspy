@@ -1382,8 +1382,63 @@ public class FloatingWindow {
                 tv.setBackground(round(0x14FFFFFF, 8));
                 sContent.addView(tv);
                 sContent.addView(chip("刷新", 0x12FFFFFF, 0x99FFFFFF, FloatingWindow::refresh));
+
+                // 自我了结：确认后直接把小红书进程干掉
+                sContent.addView(head("危险操作"));
+                sContent.addView(row("杀掉小红书全部进程，悬浮窗也会一起消失", C_DIM, 9));
+                sContent.addView(chip("自我了结", 0x44FF2244, 0xFFFFD6DD,
+                        FloatingWindow::confirmSuicide));
             });
         }, "XhsSpyProc").start();
+    }
+
+    /** 二次确认再杀，免得手滑 */
+    static void confirmSuicide() {
+        LinearLayout box = new LinearLayout(sCtx);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(10), dp(10), dp(10), dp(10));
+        box.setBackground(glass(0x18FFFFFF, 10, 0x30FF2244));
+
+        box.addView(bold("确定杀掉小红书？", 0xFFFF8FA3, 13));
+        TextView tip = row("主进程一死，所有子进程和这个悬浮窗都会跟着没。"
+                + "\n下次打开小红书要重新等模块加载。", 0xAAFFFFFF, 10);
+        tip.setPadding(0, dp(6), 0, dp(8));
+        box.addView(tip);
+
+        LinearLayout acts = new LinearLayout(sCtx);
+        acts.setOrientation(LinearLayout.HORIZONTAL);
+        acts.addView(chip("确定，杀", 0x55FF2244, 0xFFFFD6DD, FloatingWindow::suicide));
+        acts.addView(chip("算了", 0x12FFFFFF, 0x99FFFFFF, () -> {
+            if (sContent != null) refresh();
+        }));
+        box.addView(acts);
+
+        sContent.addView(box, 0);
+    }
+
+    /** 真动手 */
+    static void suicide() {
+        try {
+            XhsSpy.log("float", "自我了结: 杀进程 " + android.os.Process.myPid());
+            MiniPacker.toast(sCtx, "三秒后关闭小红书");
+        } catch (Throwable ignored) {}
+        new Thread(() -> {
+            try { Thread.sleep(600); } catch (Throwable ignored) {}
+            try {
+                android.app.Activity a = XhsSpy.sActivity;
+                if (a != null) {
+                    final android.app.Activity fa = a;
+                    a.runOnUiThread(() -> {
+                        try { fa.finishAffinity(); } catch (Throwable ignored) {}
+                    });
+                }
+            } catch (Throwable ignored) {}
+            try { Thread.sleep(500); } catch (Throwable ignored) {}
+            try {
+                android.os.Process.killProcess(android.os.Process.myPid());
+            } catch (Throwable ignored) {}
+            System.exit(0);
+        }, "XhsSpySuicide").start();
     }
 
     static View switchRow(String label, final String key, boolean on) {
