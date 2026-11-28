@@ -227,6 +227,69 @@
     off: function(){ stop('autohit'); return 'off'; }
   };
 
+
+  /* ---------- 秒杀 ---------- */
+  H.oneshot = {
+    on: function(){
+      H.capture.on();
+      window.__oneShot = true;
+      if (!window.__osHooked) {
+        window.__osHooked = 1;
+        var orig = window.__hurtOrig;
+        window.__hurtOrig = function(t, e, o, s, a, n, i){
+          try {
+            if (window.__oneShot && t && t.team && t.team !== 'blue' && !t.isPlayer) e = 9999;
+          } catch(x) {}
+          return orig.apply(this, arguments);
+        };
+      }
+      return 'on';
+    },
+    off: function(){ window.__oneShot = false; return 'off'; }
+  };
+
+  /* ---------- 飞行 ---------- */
+  H.fly = {
+    on: function(){
+      H.capture.on();
+      window.__flyOn = true;
+      window.__flyY = window.__flyY || 4;
+      every('fly', 16, function(){
+        var p = window.__player;
+        if (!p || !p.pos) return;
+        p.pos.y = window.__flyY;
+        if (p.vel) { p.vel.y = 0; }
+        p.onGround = false;
+      });
+      return 'on @y=' + window.__flyY;
+    },
+    up: function(){ window.__flyY = (window.__flyY || 4) + 2; return 'y=' + window.__flyY; },
+    down: function(){ window.__flyY = Math.max(0, (window.__flyY || 4) - 2); return 'y=' + window.__flyY; },
+    off: function(){ window.__flyOn = false; stop('fly'); return 'off'; }
+  };
+
+  /* ---------- 敌人互殴 ---------- */
+  H.madness = {
+    on: function(){
+      H.capture.on();
+      every('madness', 260, function(){
+        var arr = window.__ents || [];
+        var reds = [];
+        for (var i = 0; i < arr.length; i++) {
+          var t = arr[i];
+          if (t.team !== 'blue' && t.alive && t.pos) reds.push(t);
+        }
+        if (reds.length < 2) return;
+        var a = reds[Math.floor(Math.random() * reds.length)];
+        var b = reds[Math.floor(Math.random() * reds.length)];
+        if (!a || !b || a === b) return;
+        try { window.__hurtOrig(b, 30, a, 'ak', 'body', null, null); } catch(e) {}
+      });
+      return 'on';
+    },
+    off: function(){ stop('madness'); return 'off'; }
+  };
+
   /* ---------- 状态查询 ---------- */
   H.status = function(){
     return JSON.stringify({
