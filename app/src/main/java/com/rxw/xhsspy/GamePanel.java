@@ -437,6 +437,28 @@ public class GamePanel {
         sStatus = row("就绪", C_DIM, 9);
         sContent.addView(sStatus);
 
+        // 急救：一键停掉所有定时器和 hack，卡的时候点这个
+        LinearLayout panic = new LinearLayout(sCtx);
+        panic.setOrientation(LinearLayout.HORIZONTAL);
+        panic.setGravity(Gravity.CENTER);
+        panic.setPadding(dp(9), dp(7), dp(9), dp(7));
+        panic.setBackground(glass(0x33FF2244, 10, 0x55FF2244));
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        plp.bottomMargin = dp(7);
+        panic.setLayoutParams(plp);
+        TextView pt = bold("全部关闭（卡顿急救）", 0xFFFFD6DD, 10);
+        pt.setGravity(Gravity.CENTER);
+        panic.addView(pt);
+        panic.setOnClickListener(v -> {
+            for (String k : PLAY) sOn.put(k[0], false);
+            sSpeedMul = 1;
+            refresh();
+            run("window.__XHS_HACKS && window.__XHS_HACKS.panic()");
+        });
+        sContent.addView(panic);
+
         for (final String[] item : PLAY) {
             final String id = item[0];
             final String type = item[2];
