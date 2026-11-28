@@ -265,7 +265,17 @@
     },
     up: function(){ window.__flyY = (window.__flyY || 4) + 2; return 'y=' + window.__flyY; },
     down: function(){ window.__flyY = Math.max(0, (window.__flyY || 4) - 2); return 'y=' + window.__flyY; },
-    off: function(){ window.__flyOn = false; stop('fly'); return 'off'; }
+    off: function(){
+      window.__flyOn = false;
+      stop('fly');
+      var p = window.__player;
+      if (p) { p.onGround = false; if (p.vel) p.vel.y = -7; }
+      return 'off';
+    },
+    drop: function(){
+      window.__flyY = 0;
+      return 'y=0';
+    }
   };
 
   /* ---------- 敌人互殴 ---------- */
@@ -288,6 +298,39 @@
       return 'on';
     },
     off: function(){ stop('madness'); return 'off'; }
+  };
+
+  /* ---------- 移速 ---------- */
+  H.speed = {
+    on: function(){
+      H.capture.on();
+      if (!window.__mvHooked) {
+        window.__mvHooked = 1;
+        window.__mvOrig = window.moveEntity;
+        window.moveEntity = function(e, dt){
+          var mul = window.__speedMul || 1;
+          if (e && e.isPlayer && mul > 1 && e.vel) {
+            e.vel.x *= mul;
+            e.vel.z *= mul;
+            var r = window.__mvOrig.apply(this, arguments);
+            e.vel.x /= mul;
+            e.vel.z /= mul;
+            return r;
+          }
+          return window.__mvOrig.apply(this, arguments);
+        };
+      }
+      if (!(window.__speedMul > 1)) window.__speedMul = 2;
+      return window.__speedMul + 'x';
+    },
+    cycle: function(){
+      var arr = [1, 2, 3, 5, 8, 12];
+      var i = arr.indexOf(window.__speedMul || 1);
+      window.__speedMul = arr[(i + 1) % arr.length];
+      if (window.__speedMul > 1) H.speed.on();
+      return window.__speedMul + 'x';
+    },
+    off: function(){ window.__speedMul = 1; return '1x'; }
   };
 
   /* ---------- 商店强制可买 ---------- */
