@@ -67,6 +67,7 @@ public class GamePanel {
             {"oneshot", "秒杀"},
             {"fly",     "飞行"},
             {"madness", "敌人互殴"},
+            {"shop",    "强开商店"},
             {"all",     "一键全开"},
     };
 
@@ -176,6 +177,8 @@ public class GamePanel {
         // 中间：横向滚动的功能按钮
         HorizontalScrollView hs = new HorizontalScrollView(sCtx);
         hs.setHorizontalScrollBarEnabled(false);
+        hs.setFillViewport(true);
+        hs.setOverScrollMode(View.OVER_SCROLL_NEVER);
         sList = new LinearLayout(sCtx);
         sList.setOrientation(LinearLayout.HORIZONTAL);
         sList.setGravity(Gravity.CENTER_VERTICAL);
@@ -254,23 +257,54 @@ public class GamePanel {
     static void buildList() {
         if (sList == null) return;
         sList.removeAllViews();
+
         for (final String[] h : HACKS) {
             final String id = h[0];
-            boolean on = Boolean.TRUE.equals(sOn.get(id));
 
-            TextView chip = bold(h[1], on ? 0xFFFFFFFF : 0xFFB8BEC8, 10);
-            chip.setGravity(Gravity.CENTER);
-            chip.setPadding(dp(11), dp(7), dp(11), dp(7));
-            chip.setBackground(glass(on ? 0xF0FF3355 : 0x1AFFFFFF, 18,
-                    on ? 0x66FF8FA3 : 0x22FFFFFF));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            lp.rightMargin = dp(5);
-            chip.setLayoutParams(lp);
-            chip.setOnClickListener(v -> toggle(id));
-            sList.addView(chip);
+            // 飞行：关着是一个按钮，开着拆成 ↑ ↓ 落地
+            if ("fly".equals(id)) {
+                if (Boolean.TRUE.equals(sOn.get("fly"))) {
+                    sList.addView(chipBtn("↑", true, () -> hop("up")));
+                    sList.addView(chipBtn("↓", true, () -> hop("down")));
+                    sList.addView(chipBtn("落地", false, () -> toggle("fly")));
+                } else {
+                    sList.addView(chipBtn("飞行", false, () -> toggle("fly")));
+                }
+                continue;
+            }
+
+            boolean on = Boolean.TRUE.equals(sOn.get(id));
+            sList.addView(chipBtn(h[1], on, () -> toggle(id)));
         }
+    }
+
+    static TextView chipBtn(String label, boolean on, final Runnable act) {
+        TextView chip = bold(label, on ? 0xFFFFFFFF : 0xFFB8BEC8, 10);
+        chip.setGravity(Gravity.CENTER);
+        chip.setPadding(dp(11), dp(7), dp(11), dp(7));
+        chip.setBackground(glass(on ? 0xF0FF3355 : 0x1AFFFFFF, 18,
+                on ? 0x66FF8FA3 : 0x22FFFFFF));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.rightMargin = dp(5);
+        chip.setLayoutParams(lp);
+        chip.setOnClickListener(v -> { try { act.run(); } catch (Throwable ignored) {} });
+        return chip;
+    }
+
+    static void hop(final String dir) {
+        if (sStatus != null) sStatus.setText("…");
+        new Thread(() -> {
+            String r;
+            try {
+                r = XhsSpy.evalJs("window.__XHS_HACKS && window.__XHS_HACKS.fly." + dir + "()", 3000);
+            } catch (Throwable t) {
+                r = "失败";
+            }
+            final String msg = String.valueOf(r);
+            UI.post(() -> { if (sStatus != null) sStatus.setText(msg); });
+        }, "XhsSpyHop").start();
     }
 
     static void toggle(final String id) {
@@ -311,6 +345,8 @@ public class GamePanel {
             sScript = HackScripts.INKSTRIKE;
             XhsSpy.log("float", "注入脚本长度=" + sScript.length());
             String r = XhsSpy.evalJs(sScript, 8000);
+            // 注入完立刻挂 capture，别等用户点第一个功能
+            try { XhsSpy.evalJs("window.__XHS_HACKS && window.__XHS_HACKS.warmup()", 3000); } catch (Throwable ignored) {}
             final String msg = (r == null) ? "页面没响应" : r;
             UI.post(() -> {
                 if (sStatus == null) return;
