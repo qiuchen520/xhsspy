@@ -270,6 +270,19 @@ public class MiniServer {
             }
             case "/ping":        sendJson(out, 200, "{\"ok\":true,\"port\":" + port
                                      + ",\"pid\":" + android.os.Process.myPid() + "}"); break;
+            case "/evalat": {
+                int idx = parseInt(q.get("i"), 0);
+                String code = q.get("q");
+                if (code == null || code.isEmpty()) code = "document.title+'|'+location.href";
+                sendJson(out, 200, XhsSpy.evalAt(idx, code));
+                break;
+            }
+            case "/wvurls": {
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                bo.write(XhsSpy.webViewUrls().getBytes("UTF-8"));
+                sendBytes(out, 200, "text/plain; charset=utf-8", bo.toByteArray());
+                break;
+            }
             case "/probe": {
                 java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
                 bo.write(XhsSpy.probeAll().getBytes("UTF-8"));
@@ -284,6 +297,7 @@ public class MiniServer {
             }
             case "/evals":       sendJson(out, 200, XhsSpy.evalJsViaHttp(
                                      new String(body, "UTF-8"))); break;
+            case "/doc":         docPage(out, q); break;
             case "/mcp":         handleMcp(out, body); break;
             case "/favicon.ico": sendBytes(out, 204, "text/plain", new byte[0]); break;
             default:             sendHtml(out, 404, page("404", "<p>" + esc(path) + "</p>"));
@@ -329,9 +343,47 @@ public class MiniServer {
 
     // ------------------------------------------------------------ 页面
 
+    // ------------------------------------------------------------ 文档
+
+    private void docPage(OutputStream out, Map<String, String> q) throws IOException {
+        String key = q.get("k");
+        if (key == null || key.isEmpty()) {
+            StringBuilder b = new StringBuilder();
+            for (String[] it : DocText.INDEX) {
+                String body = DocText.get(it[1]);
+                b.append(card("/doc?k=" + enc(it[1]) + "&" + k(q), it[0],
+                        body.length() + " 字 · " + firstHeading(body)));
+            }
+            sendHtml(out, 200, page("内置文档",
+                    "<h1>内置文档</h1><div class=grid>" + b + "</div>"
+                    + "<p class=dim>文档编在 APK 里，离线也能看。改 docs/*.md 后跑 gen_docs.py。</p>"));
+            return;
+        }
+
+        String body = DocText.get(key);
+        String title = key;
+        for (String[] it : DocText.INDEX) if (it[1].equals(key)) title = it[0];
+
+        String html = "<h1>" + esc(title) + "</h1>"
+                + "<p><a href=\"/doc?" + k(q) + "\">← 全部文档</a></p>"
+                + "<pre style=\"white-space:pre-wrap;word-break:break-word;background:#fff;"
+                + "padding:14px;border-radius:12px;font-size:12.5px;line-height:1.65;"
+                + "font-family:ui-monospace,Menlo,Consolas,monospace\">"
+                + esc(body) + "</pre>";
+        sendHtml(out, 200, page(title, html));
+    }
+
+    private static String firstHeading(String md) {
+        for (String l : md.split("\n")) {
+            if (l.startsWith("# ")) return l.substring(2).trim();
+        }
+        return "";
+    }
+
     private void home(OutputStream out, Map<String, String> q) throws IOException {
         StringBuilder b = new StringBuilder();
         b.append("<div class=grid>");
+        b.append(card("/doc?" + k(q), "内置文档", "外挂手册、逆向笔记，离线可读"));
         b.append(card("/mini?" + k(q), "★ 小程序源码", "已抓到的包，一键导出 zip"));
         b.append(card("/wall?" + k(q), "掘金壁纸", "壁纸站，能直接看图下原图"));
         b.append(card("/vars?" + k(q), "运行时数值", "改页面变量和 localStorage"));
@@ -896,6 +948,16 @@ public class MiniServer {
                 prop("name", "string", "开关名：body / file / net"),
                 prop("value", "string", "on 或 off"),
                 "name", "value"));
+        arr.put(tool("doc_list", "列出模块内置的文档（外挂手册、逆向笔记），返回标题和字数。"));
+        arr.put(tool("doc_read", "读一份内置文档的全文 markdown。",
+                prop("key", "string", "文档 key，先调 doc_list 拿"), "key"));
+        arr.put(tool("st_sign", "算神图君接口签名。62 字表偏移 +3，前后各插一个随机字符。",
+                prop("token", "string", "登录 token，可留空"),
+                prop("ts", "number", "秒级时间戳，留空用当前时间")));
+        arr.put(tool("st_probe", "带签名直接打神图君接口，返回 HTTP 码和响应体。",
+                prop("method", "string", "接口名，如 indexAuthorList / getOpenid"),
+                prop("token", "string", "登录 token，可留空"),
+                prop("post", "string", "true = POST，默认 GET"), "method"));
 
         return arr;
     }
@@ -972,6 +1034,13 @@ public class MiniServer {
                 case "switches": return text(XhsSpy.switches());
                 case "set_switch": return text(XhsSpy.setSwitch(
                         a.optString("name"), a.optString("value")));
+                case "doc_list":   return text(docList());
+                case "doc_read":   return text(DocText.get(a.optString("key", "")));
+                case "st_sign":    return text(stSignTool(a.optString("token", ""),
+                                            a.optLong("ts", 0)));
+                case "st_probe":   return text(stProbeTool(a.optString("method", "indexAuthorList"),
+                                            a.optString("token", ""),
+                                            "true".equalsIgnoreCase(a.optString("post", ""))));
                 case "roots":      return text(toolRoots());
                 case "js_vars":    return text(VarsPanel.snapshot().toString());
                 case "js_set":     return text(VarsPanel.set(a.optString("scope", "window"),
@@ -986,6 +1055,86 @@ public class MiniServer {
             }
         } catch (Exception e) {
             return errResult("执行失败: " + e);
+        }
+    }
+
+    // ------------------------------------------------------------ 神图君
+
+    static final String ST_TABLE =
+            "PXhw7UT1B0a9kQDKZsjIASmOezxYG4CHo5Jyfg2b8FLpEvRr3WtVnlqMidu6cN";
+    static final String ST_BASE = "https://stapi.youpengw.com/minixhs/v1/";
+
+    private static String docList() {
+        StringBuilder b = new StringBuilder("内置文档\n");
+        for (String[] it : DocText.INDEX) {
+            b.append("  ").append(it[1]).append("  ")
+             .append(it[0]).append("  ")
+             .append(DocText.get(it[1]).length()).append(" 字\n");
+        }
+        return b.toString();
+    }
+
+    /** token + "###" + 秒级时间戳，每个字符映射到字表 (c+3)%62，前后插随机字符 */
+    static String stSignOf(String token, long ts) {
+        String e = (token == null ? "" : token) + "###" + ts;
+        java.util.Random rnd = new java.util.Random();
+        StringBuilder sb = new StringBuilder(e.length() * 3);
+        for (int i = 0; i < e.length(); i++) {
+            char c = e.charAt(i);
+            sb.append(ST_TABLE.charAt(rnd.nextInt(62)));
+            sb.append(ST_TABLE.charAt((c + 3) % 62));
+            sb.append(ST_TABLE.charAt(rnd.nextInt(62)));
+        }
+        return sb.toString();
+    }
+
+    private static String stSignTool(String token, long ts) {
+        long t = ts > 0 ? ts : Math.round(System.currentTimeMillis() / 1000.0);
+        String sign = stSignOf(token, t);
+        return "timestamp " + t + "\nsign " + sign + "\n长度 " + sign.length()
+                + "（应为 (token+" + 4 + "+ts)*3）";
+    }
+
+    /** 服务端会在 JSON 前吐一段 PHP print_r，必须 rfind 才稳 */
+    private static String stProbeTool(String method, String token, boolean post) {
+        java.net.HttpURLConnection c = null;
+        try {
+            long ts = Math.round(System.currentTimeMillis() / 1000.0);
+            java.net.URL u = new java.net.URL(ST_BASE + method);
+            c = (HttpURLConnection) u.openConnection();
+            c.setRequestMethod(post ? "POST" : "GET");
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(12000);
+            c.setRequestProperty("token", token == null ? "" : token);
+            c.setRequestProperty("timestamp", String.valueOf(ts));
+            c.setRequestProperty("sign", stSignOf(token, ts));
+            c.setRequestProperty("User-Agent", "MicroMessenger/8.0.40");
+            c.setRequestProperty("Content-Type", "application/json");
+            if (post) {
+                c.setDoOutput(true);
+                c.getOutputStream().write("{}".getBytes("UTF-8"));
+            }
+            int code = c.getResponseCode();
+            java.io.InputStream is = code >= 400 ? c.getErrorStream() : c.getInputStream();
+            StringBuilder sb = new StringBuilder();
+            if (is != null) {
+                byte[] buf = new byte[8192];
+                int r;
+                while ((r = is.read(buf)) > 0) {
+                    sb.append(new String(buf, 0, r, "UTF-8"));
+                    if (sb.length() > 20000) break;
+                }
+                is.close();
+            }
+            String raw = sb.toString();
+            int i = raw.lastIndexOf("{\"code\"");
+            String body = i >= 0 ? raw.substring(i) : raw;
+            return "HTTP " + code + "  " + (post ? "POST " : "GET ") + method
+                    + "\n" + body;
+        } catch (Throwable t) {
+            return "× " + t;
+        } finally {
+            if (c != null) c.disconnect();
         }
     }
 
