@@ -1327,7 +1327,8 @@ public class FloatingWindow {
             return;
         }
 
-        boolean known = "6ab94378dd88340015152901".equals(appid);
+        final String fid = appid;
+        boolean known = "6ab94378dd88340015152901".equals(fid);
         LinearLayout c = card();
         TextView nm = bold(known ? "墨线突击" : title, C_TEXT, 13);
         c.addView(nm);
@@ -1351,7 +1352,7 @@ public class FloatingWindow {
             }));
         } else {
             acts.addView(chip("打开外挂面板", 0x3325E07A, 0xFFC8F2D8, () -> {
-                GamePanel.show(sCtx, appid);
+                GamePanel.show(sCtx, fid);
                 UI.postDelayed(FloatingWindow::refresh, 400);
             }));
         }
