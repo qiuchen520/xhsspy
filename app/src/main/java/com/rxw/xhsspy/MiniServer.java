@@ -1101,7 +1101,7 @@ public class MiniServer {
         try {
             long ts = Math.round(System.currentTimeMillis() / 1000.0);
             java.net.URL u = new java.net.URL(ST_BASE + method);
-            c = (HttpURLConnection) u.openConnection();
+            c = (java.net.HttpURLConnection) u.openConnection();
             c.setRequestMethod(post ? "POST" : "GET");
             c.setConnectTimeout(8000);
             c.setReadTimeout(12000);
