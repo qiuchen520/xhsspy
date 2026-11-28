@@ -13,6 +13,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -63,6 +64,9 @@ public class GamePanel {
             {"esp",     "透视 ESP"},
             {"freeze",  "定身"},
             {"autohit", "自动命中"},
+            {"oneshot", "秒杀"},
+            {"fly",     "飞行"},
+            {"madness", "敌人互殴"},
             {"all",     "一键全开"},
     };
 
@@ -148,63 +152,67 @@ public class GamePanel {
                 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                 : WindowManager.LayoutParams.TYPE_PHONE;
 
+        int sw = sCtx.getResources().getDisplayMetrics().widthPixels;
+        int panelW = Math.min(sw - dp(10), dp(360));
+
         sRoot = new LinearLayout(sCtx);
-        sRoot.setOrientation(LinearLayout.VERTICAL);
-        sRoot.setBackground(glass(0xF00C0E14, 14, 0x33FFFFFF));
-        sRoot.setPadding(dp(8), dp(6), dp(8), dp(8));
+        sRoot.setOrientation(LinearLayout.HORIZONTAL);
+        sRoot.setGravity(Gravity.CENTER_VERTICAL);
+        sRoot.setBackground(glass(0xF00C0E14, 26, 0x33FFFFFF));
+        sRoot.setPadding(dp(10), dp(6), dp(6), dp(6));
 
-        // 标题栏
-        LinearLayout bar = new LinearLayout(sCtx);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView title = bold(gameName(), 0xFFFF8FA3, 12);
-        bar.addView(title, new LinearLayout.LayoutParams(0,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-
-        bar.addView(btn("−", () -> { sScale = Math.max(0.7f, sScale - 0.15f); relayout(); }));
-        bar.addView(btn("+", () -> { sScale = Math.min(2.0f, sScale + 0.15f); relayout(); }));
-        bar.addView(btn("×", GamePanel::hide));
-
-        sRoot.addView(bar, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
+        // 左边：名字 + 状态（竖排，窄）
+        LinearLayout head = new LinearLayout(sCtx);
+        head.setOrientation(LinearLayout.VERTICAL);
+        head.setPadding(0, 0, dp(8), 0);
+        TextView title = bold(gameName(), 0xFFFF8FA3, 11);
+        head.addView(title);
+        sStatus = txt("…", 0x66FFFFFF, 8);
+        head.addView(sStatus);
+        sRoot.addView(head, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        // 分隔
-        View line = new View(sCtx);
-        line.setBackgroundColor(0x22FFFFFF);
-        LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, dp(1)));
-        llp.topMargin = dp(5);
-        llp.bottomMargin = dp(5);
-        sRoot.addView(line, llp);
-
-        // 列表
-        ScrollView sc = new ScrollView(sCtx);
-        sc.setVerticalScrollBarEnabled(false);
+        // 中间：横向滚动的功能按钮
+        HorizontalScrollView hs = new HorizontalScrollView(sCtx);
+        hs.setHorizontalScrollBarEnabled(false);
         sList = new LinearLayout(sCtx);
-        sList.setOrientation(LinearLayout.VERTICAL);
-        sc.addView(sList);
-        sRoot.addView(sc, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        sList.setOrientation(LinearLayout.HORIZONTAL);
+        sList.setGravity(Gravity.CENTER_VERTICAL);
+        hs.addView(sList);
+        sRoot.addView(hs, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        // 状态栏
-        sStatus = txt("未连接", 0x66FFFFFF, 9);
-        sStatus.setPadding(0, dp(4), 0, 0);
-        sRoot.addView(sStatus);
+        // 右边：缩放和关闭
+        LinearLayout ctrl = new LinearLayout(sCtx);
+        ctrl.setOrientation(LinearLayout.VERTICAL);
+        ctrl.setGravity(Gravity.CENTER);
+        LinearLayout rowA = new LinearLayout(sCtx);
+        rowA.setOrientation(LinearLayout.HORIZONTAL);
+        rowA.addView(btn("−", () -> { sScale = Math.max(0.7f, sScale - 0.15f); relayout(); }));
+        rowA.addView(btn("+", () -> { sScale = Math.min(2.0f, sScale + 0.15f); relayout(); }));
+        ctrl.addView(rowA);
+        TextView close = bold("×", 0xFFFF8FA3, 11);
+        close.setGravity(Gravity.CENTER);
+        close.setPadding(0, dp(2), 0, 0);
+        close.setOnClickListener(v -> hide());
+        ctrl.addView(close);
+        sRoot.addView(ctrl, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         buildList();
 
         sLp = new WindowManager.LayoutParams(
-                dp(200), dp(300), type,
+                panelW, WindowManager.LayoutParams.WRAP_CONTENT, type,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 android.graphics.PixelFormat.TRANSLUCENT);
         sLp.gravity = Gravity.TOP | Gravity.START;
-        sLp.x = dp(8);
-        sLp.y = dp(120);
+        sLp.x = dp(5);
+        sLp.y = dp(90);
 
-        bindDrag(bar);
+        bindDrag(head);
 
         try {
             sWm.addView(sRoot, sLp);
@@ -250,26 +258,18 @@ public class GamePanel {
             final String id = h[0];
             boolean on = Boolean.TRUE.equals(sOn.get(id));
 
-            LinearLayout row = new LinearLayout(sCtx);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(9), dp(9), dp(9), dp(9));
-            row.setBackground(glass(on ? 0x2EFF6B85 : 0x12FFFFFF, 9, 0x20FFFFFF));
-            LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
+            TextView chip = bold(h[1], on ? 0xFFFFFFFF : 0xFFB8BEC8, 10);
+            chip.setGravity(Gravity.CENTER);
+            chip.setPadding(dp(11), dp(7), dp(11), dp(7));
+            chip.setBackground(glass(on ? 0xF0FF3355 : 0x1AFFFFFF, 18,
+                    on ? 0x66FF8FA3 : 0x22FFFFFF));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT);
-            rlp.bottomMargin = dp(5);
-            row.setLayoutParams(rlp);
-
-            TextView name = txt(h[1], on ? 0xFFFFD6DD : 0xFFD8DCE4, 11);
-            row.addView(name, new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-
-            TextView state = bold(on ? "开" : "关", on ? 0xFFFF8FA3 : 0x77FFFFFF, 10);
-            row.addView(state);
-
-            row.setOnClickListener(v -> toggle(id));
-            sList.addView(row);
+            lp.rightMargin = dp(5);
+            chip.setLayoutParams(lp);
+            chip.setOnClickListener(v -> toggle(id));
+            sList.addView(chip);
         }
     }
 
