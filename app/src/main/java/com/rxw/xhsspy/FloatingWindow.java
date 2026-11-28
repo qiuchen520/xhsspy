@@ -443,8 +443,8 @@ public class FloatingWindow {
 
     // ------------------------------------------------------------ 面板骨架
 
-    static final String[] NAV_KEYS = {"app", "tool", "vars", "wall", "log", "mem", "proc"};
-    static final String[] NAV_TEXT = {"小程序", "小工具", "数值", "壁纸", "日志", "内存", "进程"};
+    static final String[] NAV_KEYS = {"game", "app", "tool", "vars", "wall", "log", "mem", "proc"};
+    static final String[] NAV_TEXT = {"游戏", "小程序", "小工具", "数值", "壁纸", "日志", "内存", "进程"};
 
     static FrameLayout makePanel() {
         FrameLayout wrap = new FrameLayout(sCtx);
@@ -544,6 +544,7 @@ public class FloatingWindow {
                 case "log":  renderLog(); break;
                 case "mem":  renderMem(); break;
                 case "proc": renderProc(); break;
+                case "game": renderGame(); break;
             }
         } catch (Throwable t) {
             sContent.addView(text("出错：" + t, 0xFFFF6B6B, 11));
@@ -1274,6 +1275,91 @@ public class FloatingWindow {
             sContent.addView(row("读不到：" + t, 0xFFFF6B6B, 11));
         }
 
+    }
+
+    /** 游戏：识别当前页面是哪个小游戏，勾选后唤起独立的 GamePanel */
+    static void renderGame() {
+        sContent.addView(head("游戏外挂"));
+        sContent.addView(row("识别当前页面…", C_DIM, 10));
+
+        new Thread(() -> {
+            String info = null;
+            try {
+                info = XhsSpy.evalJs(
+                        "(function(){try{return JSON.stringify({u:location.href,t:document.title});}"
+                                + "catch(e){return '';}})()", 4000);
+            } catch (Throwable ignored) {}
+            final String res = info;
+            UI.post(() -> {
+                if (sContent == null || !"game".equals(sCur)) return;
+                sContent.removeAllViews();
+                buildGame(res);
+            });
+        }, "XhsSpyGame").start();
+    }
+
+    static void buildGame(String raw) {
+        sContent.addView(head("游戏外挂"));
+        if (raw == null || raw.isEmpty()) {
+            sContent.addView(row("读不到页面\n先在 App 里打开一个小游戏", C_DIM, 11));
+            sContent.addView(chip("重试", 0x12FFFFFF, 0x99FFFFFF, FloatingWindow::refresh));
+            return;
+        }
+
+        String url = "", title = "";
+        try {
+            JSONObject o = new JSONObject(raw);
+            url = o.optString("u", "");
+            title = o.optString("t", "");
+        } catch (Throwable ignored) {}
+
+        String appid = "";
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("https?://([0-9a-zA-Z]+)\\.minitool\\.xiaohongshu\\.com")
+                .matcher(url);
+        if (m.find()) appid = m.group(1);
+
+        if (appid.isEmpty()) {
+            sContent.addView(row("当前不是小工具页面", C_DIM, 11));
+            sContent.addView(row(title, C_SUB, 10));
+            sContent.addView(row(url, C_DIM, 9));
+            sContent.addView(chip("重试", 0x12FFFFFF, 0x99FFFFFF, FloatingWindow::refresh));
+            return;
+        }
+
+        boolean known = "6ab94378dd88340015152901".equals(appid);
+        LinearLayout c = card();
+        TextView nm = bold(known ? "墨线突击" : title, C_TEXT, 13);
+        c.addView(nm);
+        c.addView(row(appid, C_DIM, 9));
+        if (!title.isEmpty()) c.addView(row("页面标题 " + title, C_SUB, 10));
+        c.addView(row(known ? "已适配 · 7 个功能" : "未适配 · 面板打开后需要手动注入",
+                known ? 0xFF8FE0B0 : 0xFFE0C080, 10));
+
+        LinearLayout acts = new LinearLayout(sCtx);
+        acts.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        alp.topMargin = dp(7);
+        acts.setLayoutParams(alp);
+
+        if (GamePanel.isShown()) {
+            acts.addView(chip("关闭外挂面板", 0x33FF6B85, 0xFFFFD6DD, () -> {
+                GamePanel.hide();
+                UI.postDelayed(FloatingWindow::refresh, 250);
+            }));
+        } else {
+            acts.addView(chip("打开外挂面板", 0x3325E07A, 0xFFC8F2D8, () -> {
+                GamePanel.show(sCtx, appid);
+                UI.postDelayed(FloatingWindow::refresh, 400);
+            }));
+        }
+        c.addView(acts);
+        sContent.addView(c);
+
+        sContent.addView(row("勾选后摇杆在左上角，可拖动、可 ± 缩放", C_DIM, 9));
+        sContent.addView(chip("重新识别", 0x12FFFFFF, 0x99FFFFFF, FloatingWindow::refresh));
     }
 
     /** 进程诊断：pid / 端口 / 各进程的 WebView，能不能跑 JS 一眼看出来 */
