@@ -162,39 +162,65 @@ wx.request({
 
 ---
 
-## 六、拿真实 token 的路子
+## 六、拿 token 和 openid
 
-绕不开 `wx.login`，但可以在页面里直接读缓存 —— 用户登录过一次之后，小程序会把 `userInfo` 塞进本地缓存：
+两条路，都不需要用户退出重登。
 
-```js
-// 在当前小程序的 WebView 里跑
-getApp().getCache("userInfo")
+### 6.1 读缓存（最快）
+
+登录态明文躺在 MMKV 里，URL 编码的 JSON，随便读：
+
+```
+/data/user/0/com.xingin.xhs/files/mmkv/
+    xhsmp_storage_6800e1cb993c2f0001f2dfba_<uin>
 ```
 
-返回大概是：
+里面 `userInfo` 长这样（解码后）：
 
 ```json
-{"openid":"o...真实号","token":"eyJ...","nickname":"...","avatar":"..."}
+{
+  "openid": "aa47588df4696078ff103ebe828e76ea6f266d761e9a23312a552ff3a66e7a55",
+  "anonymous_openid": "an17958500085770",
+  "unionid": "un17958500087994",
+  "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9....",
+  "userInfoCacheVersion": 1,
+  "nickName": "你的昵称"
+}
 ```
 
-如果拿不到 `getApp()`，退而求其次扫全部 storage：
+⚠️ `openid` 是 **64 位 hex**，不是 `EMst` 开头那种匿名号。看到 EMst 说明没真登录。
+
+⚠️ 缓存里有好几条 userInfo（退出登录会写一条昵称为空的），取**最后一条**。
+
+### 6.2 主动登录（token 过期时）
+
+缓存里那条 token 过期了，小程序也不会自己刷新 ——
+`getUserOpenId` 判断 `userInfoCacheVersion` 一致就直接用缓存，永远不会去换。
+
+但可以在渲染层直接调底层桥强制登录：
 
 ```js
-(function () {
-  var out = {};
-  try {
-    for (var i = 0; i < localStorage.length; i++) {
-      var k = localStorage.key(i);
-      out[k] = localStorage.getItem(k);
-    }
-  } catch (e) {}
-  try {
-    var app = getApp();
-    if (app && app.__cache) out.__cache = app.__cache;
-  } catch (e) {}
-  return JSON.stringify(out);
-})()
+// 渲染层没有 xhs.login，但这个有
+const r = await xhsBridge.callNative('login', { force: true });
+// → {"code":"e55f5c6226804219ab573d4d8bd78418","errMsg":"login:ok"}
 ```
+
+拿到 `code` 之后换 token：
+
+```js
+await new Promise(res => xhs.request({
+  url: 'https://stapi.youpengw.com/minixhs/v1/shentujun/getOpenid',
+  method: 'POST',
+  data: { code: r.code, appid: '6800e1cb993c2f0001f2dfba', timestamp: Date.now() },
+  success: res, fail: () => res(null)
+}));
+// → data: { openid, token, unionid, anonymous_openid }
+```
+
+注意 `getOpenid` 这个请求 **不带 sign**，参数只要 `code` / `appid` / `timestamp`（毫秒）。
+`timestamp` 是毫秒，别跟签名里那个秒级时间戳搞混。
+
+新 token 有效期 **1 小时**，到期必须重新换。
 
 ---
 
@@ -233,10 +259,68 @@ python3 /workspace/shentujun/combo.py
 
 ---
 
-## 九、卡住的地方
+## 九、三个坑和一条死路
 
-1. `wx.login` 的 `code` 只能在小程序运行时拿，离线脚本造不出来
-2. `getOpenid` 换号必须带 `encryptedData` + `iv`，都是从 `wx.getUserProfile` 出来的
-3. 所以**只能在页面里现场读缓存**，不能纯脚本复现
+四个都实测过，别再踩。
 
-结论：**先登录一次，再读 `getApp().getCache("userInfo")`**，之后所有接口就都通了。
+### 坑 1：UA 必须是小红书小程序的
+
+这是最坑的一个。外面怎么发都是 `{"code":0,"msg":"信息有误"}`，
+不是签名错、不是 token 过期，是 **User-Agent 不对**。
+
+抓包看宿主实际发的请求头，干净得离谱 —— 没有 cookie、没有身份票据：
+
+```
+Accept-Language: zh-CN,zh;q=0.9,en;q=0.8
+Content-Type: application/json
+Referer: https://www.xiaohongshu.com/6800e1cb993c2f0001f2dfba/1.0.15
+User-Agent: Dalvik/2.1.0 (Linux; U; Android 10; ...) discover/9.53.3 xhsminiapp/3.152.1
+```
+
+服务端认的就是 UA 里的 **`xhsminiapp`**。Referer 反而不重要（去掉照样通）。
+
+对照实验：
+
+| UA | Referer | sign | 结果 |
+|---|---|---|---|
+| 小程序 UA | 有 | 有 | ✅ success |
+| 小程序 UA | 无 | 有 | ✅ success |
+| 普通 UA | 有 | 有 | ❌ 信息有误 |
+| 小程序 UA | 有 | 无 | ❌ 当前访问人数过多 |
+
+**所以服务器完全可以自己抓，不需要手机参与。**
+
+### 坑 2：token 只有 1 小时
+
+JWT payload 里 `expire_time` 是对的，签发后 3600 秒失效。
+过期后所有业务接口都返回「信息有误」，很容易误判成签名写错。
+
+好在 `openid` 不随 token 变，一个 token 能抓**全站所有作者**，不是只有自己关注的。
+
+### 坑 3：photoList 固定每页 30 条
+
+`limit` 传 30、36、60 都一样，永远返回 30 条。
+所以翻页判断**不能写 `list.length < limit`**，会一页就停。
+正确做法：整页没有新数据就认为到底了。
+
+### 死路：自造 token
+
+试过把 payload 里 `expire_time` 改成 2100 年，签名乱填：
+
+```json
+{"openid":"aa47588d...","expire_time":4102415999}
+```
+
+结果：`{"code":-10002,"msg":"参数异常,请退出重试"}`
+
+服务端真的在验 HS256 签名，密钥在它那边。**token 造不出来。**
+
+---
+
+## 十、一句话总结
+
+```
+带小程序 UA + 真实 openid + 正确 sign  →  任何机器都能抓
+token 一小时过期，过期前用 xhsBridge.callNative('login') 换新的
+自造 token 无解
+```
