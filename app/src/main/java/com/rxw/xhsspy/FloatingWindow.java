@@ -444,8 +444,10 @@ public class FloatingWindow {
 
     // ------------------------------------------------------------ 面板骨架
 
-    static final String[] NAV_KEYS = {"game", "app", "tool", "vars", "wall", "log", "mem", "proc"};
-    static final String[] NAV_TEXT = {"游戏", "小程序", "小工具", "数值", "壁纸", "日志", "内存", "进程"};
+    static final String[] NAV_KEYS =
+            {"game", "app", "tool", "vars", "doc", "tools", "wall", "log", "mem", "proc"};
+    static final String[] NAV_TEXT =
+            {"游戏", "小程序", "小工具", "数值", "文档", "工具", "壁纸", "日志", "内存", "进程"};
 
     static FrameLayout makePanel() {
         FrameLayout wrap = new FrameLayout(sCtx);
@@ -510,7 +512,7 @@ public class FloatingWindow {
             boolean on = key.equals(sCur);
             TextView t = bold(NAV_TEXT[i], on ? 0xFFFFFFFF : 0x8AFFFFFF, 12);
             t.setGravity(Gravity.CENTER);
-            t.setPadding(0, dp(10), 0, dp(10));
+            t.setPadding(0, dp(8), 0, dp(8));
             if (on) {
                 GradientDrawable g = round(0x2EFFFFFF, 11);
                 g.setStroke(dp(1), 0x33FFFFFF);
@@ -546,6 +548,8 @@ public class FloatingWindow {
                 case "mem":  renderMem(); break;
                 case "proc": renderProc(); break;
                 case "game": renderGame(); break;
+                case "doc":  renderDoc(); break;
+                case "tools": renderTools(); break;
             }
         } catch (Throwable t) {
             sContent.addView(text("出错：" + t, 0xFFFF6B6B, 11));
@@ -1362,6 +1366,427 @@ public class FloatingWindow {
 
         sContent.addView(row("勾选后摇杆在左上角，可拖动、可 ± 缩放", C_DIM, 9));
         sContent.addView(chip("重新识别", 0x12FFFFFF, 0x99FFFFFF, FloatingWindow::refresh));
+    }
+
+    // ------------------------------------------------------------ 文档
+
+    static void renderDoc() {
+        sContent.addView(head("内置文档"));
+        sContent.addView(row("离线可读 · 正文可长按选中", C_DIM, 9));
+
+        for (int i = 0; i < DocText.INDEX.length; i++) {
+            final String title = DocText.INDEX[i][0];
+            final String key = DocText.INDEX[i][1];
+            final String body = DocText.get(key);
+
+            LinearLayout c = card();
+            c.addView(bold(title, C_TEXT, 12));
+            c.addView(row(summaryOf(body), C_DIM, 9));
+            c.addView(row(body.length() + " 字 · 点开看全文", 0x66FFFFFF, 9));
+            c.setOnClickListener(v -> showDoc(title, body));
+            sContent.addView(c);
+        }
+        sContent.addView(row("正文在 docs/*.md，改完跑 gen_docs.py 重新生成", C_DIM, 9));
+    }
+
+    /** 从 md 里抽前几个二级标题当摘要 */
+    static String summaryOf(String md) {
+        StringBuilder sb = new StringBuilder();
+        String[] ls = md.split("\n");
+        for (String l : ls) {
+            if (!l.startsWith("## ")) continue;
+            String t = l.substring(3).trim();
+            if (t.isEmpty()) continue;
+            if (sb.length() > 0) sb.append(" · ");
+            sb.append(t);
+            if (sb.length() > 36) break;
+        }
+        return sb.length() == 0 ? "（无摘要）" : sb.toString();
+    }
+
+    static void showDoc(final String title, final String body) {
+        if (sContent == null) return;
+        sContent.removeAllViews();
+        sContent.addView(head(title));
+
+        LinearLayout acts = new LinearLayout(sCtx);
+        acts.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        alp.bottomMargin = dp(6);
+        acts.setLayoutParams(alp);
+        acts.addView(chip("← 返回", 0x12FFFFFF, 0xCCFFFFFF, FloatingWindow::refresh));
+        acts.addView(chip("复制全文", 0x2E22C55E, 0xFFC8F2D8, () -> {
+            if (clip(title, body)) flash("已复制 " + body.length() + " 字");
+        }));
+        sContent.addView(acts);
+
+        TextView tv = text(body, 0xC8FFFFFF, 9);
+        tv.setTypeface(Typeface.MONOSPACE);
+        tv.setTextIsSelectable(true);
+        tv.setLineSpacing(dp(2), 1.12f);
+        tv.setPadding(dp(8), dp(7), dp(8), dp(7));
+        tv.setBackground(round(0x14FFFFFF, 9));
+        sContent.addView(tv);
+    }
+
+    // ------------------------------------------------------------ 工具
+
+    static void renderTools() {
+        sContent.addView(head("页面工具"));
+
+        // ① 当前页面速览
+        LinearLayout c1 = card();
+        c1.addView(bold("当前页面", C_TEXT, 12));
+        final TextView info = text("读取中…", C_SUB, 9);
+        info.setTypeface(Typeface.MONOSPACE);
+        info.setTextIsSelectable(true);
+        c1.addView(info);
+        final LinearLayout acts1 = new LinearLayout(sCtx);
+        acts1.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams a1lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        a1lp.topMargin = dp(6);
+        acts1.setLayoutParams(a1lp);
+        c1.addView(acts1);
+        sContent.addView(c1);
+
+        // ② 凭据嗅探
+        LinearLayout c2 = card();
+        c2.addView(bold("凭据嗅探", C_TEXT, 12));
+        c2.addView(row("扫 window + localStorage + getApp().getCache，找 token / openid / sign", C_DIM, 9));
+        final TextView cred = text("", 0xC8FFFFFF, 9);
+        cred.setTypeface(Typeface.MONOSPACE);
+        cred.setTextIsSelectable(true);
+        c2.addView(cred);
+        LinearLayout acts2 = new LinearLayout(sCtx);
+        acts2.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams a2lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        a2lp.topMargin = dp(6);
+        acts2.setLayoutParams(a2lp);
+        acts2.addView(chip("开始扫描", 0x338B5CF6, 0xFFE0D4FF, () -> runCred(cred)));
+        acts2.addView(chip("复制", 0x12FFFFFF, 0x99FFFFFF, () -> {
+            String s = cred.getText().toString();
+            if (s.isEmpty()) return;
+            if (clip("凭据", s)) flash("凭据已复制");
+        }));
+        c2.addView(acts2);
+        sContent.addView(c2);
+
+        // ③ 存储导出
+        LinearLayout c3 = card();
+        c3.addView(bold("存储导出", C_TEXT, 12));
+        c3.addView(row("把整个 localStorage 打成 JSON 存到 Download/XhsSpy/", C_DIM, 9));
+        LinearLayout acts3 = new LinearLayout(sCtx);
+        acts3.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams a3lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        a3lp.topMargin = dp(6);
+        acts3.setLayoutParams(a3lp);
+        final TextView st3 = text("", 0x8FE0B0, 9);
+        acts3.addView(chip("导出", 0x2E22C55E, 0xFFC8F2D8, () -> exportStorage(st3)));
+        c3.addView(acts3);
+        c3.addView(st3);
+        sContent.addView(c3);
+
+        // ④ 执行 / 刷新
+        LinearLayout c4 = card();
+        c4.addView(bold("脚本", C_TEXT, 12));
+        LinearLayout acts4 = new LinearLayout(sCtx);
+        acts4.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams a4lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        a4lp.topMargin = dp(4);
+        acts4.setLayoutParams(a4lp);
+        acts4.addView(chip("执行 JS", 0x338B5CF6, 0xFFE0D4FF, FloatingWindow::promptJs));
+        acts4.addView(chip("刷新页面", 0x2E22C55E, 0xFFC8F2D8, () -> {
+            VarsPanel.evalJs("location.reload()");
+            flash("已刷新");
+        }));
+        c4.addView(acts4);
+        sContent.addView(c4);
+
+        // ⑤ 神图君
+        sContent.addView(head("神图君 · 接口测试"));
+        sContent.addView(row("stapi.youpengw.com/minixhs/v1/", C_DIM, 9));
+
+        LinearLayout c5 = card();
+        c5.addView(bold("签名 / 探测", C_TEXT, 12));
+        final EditText tok = new EditText(sCtx);
+        tok.setTextColor(C_TEXT);
+        tok.setHint("token（留空 = 匿名）");
+        tok.setHintTextColor(0x4DFFFFFF);
+        tok.setTextSize(10);
+        tok.setSingleLine(true);
+        tok.setBackground(glass(0x14FFFFFF, 8, 0x1FFFFFFF));
+        tok.setPadding(dp(8), dp(6), dp(8), dp(6));
+        tok.setOnFocusChangeListener((v, has) -> setImeMode(has));
+        c5.addView(tok, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(38)));
+
+        final TextView st5 = text("", 0xCCFFFFFF, 9);
+        st5.setTypeface(Typeface.MONOSPACE);
+        st5.setTextIsSelectable(true);
+        LinearLayout acts5 = new LinearLayout(sCtx);
+        acts5.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams a5lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        a5lp.topMargin = dp(6);
+        acts5.setLayoutParams(a5lp);
+        acts5.addView(chip("算签名", 0x1FFFFFFF, 0xFFE8D8FF,
+                () -> stSignTo(tok.getText().toString().trim(), st5)));
+        acts5.addView(chip("打接口", 0x338B5CF6, 0xFFE0D4FF,
+                () -> probeSt(tok.getText().toString().trim(), st5)));
+        c5.addView(acts5);
+        c5.addView(st5);
+        sContent.addView(c5);
+
+        // 页面信息异步补上
+        new Thread(() -> {
+            JSONObject r = VarsPanel.evalJs(PAGE_INFO_JS);
+            String txt;
+            if (r.optBoolean("ok", false)) {
+                txt = r.optString("now", "");
+                if (txt.startsWith("\"") && txt.endsWith("\"") && txt.length() > 1) {
+                    txt = txt.substring(1, txt.length() - 1).replace("\\n", "\n").replace("\\\"", "\"");
+                }
+            } else {
+                txt = "读不到页面：" + r.optString("err", "没有 WebView");
+            }
+            final String out = txt;
+            UI.post(() -> {
+                if (sContent == null || !"tools".equals(sCur)) return;
+                info.setText(out);
+                acts1.addView(chip("复制", 0x12FFFFFF, 0x99FFFFFF, () -> {
+                    if (clip("页面信息", out)) flash("已复制");
+                }));
+                acts1.addView(chip("重新读取", 0x12FFFFFF, 0x99FFFFFF,
+                        FloatingWindow::refresh));
+            });
+        }, "XhsSpyTools").start();
+    }
+
+    static final String PAGE_INFO_JS =
+            "(function(){var o=[];"
+            + "try{o.push('url    '+location.href);}catch(e){o.push('url    读不到');}"
+            + "try{o.push('title  '+document.title);}catch(e){}"
+            + "try{o.push('storage '+localStorage.length+' 项');}catch(e){}"
+            + "try{o.push('window '+Object.keys(window).length+' 个变量');}catch(e){}"
+            + "try{o.push('ua     '+navigator.userAgent.slice(0,90));}catch(e){}"
+            + "return o.join('\\n');})()";
+
+    static final String CRED_JS =
+            "(function(){var hits=[],seen=0;"
+            + "function walk(o,p,d){if(!o||d>3||seen>2500)return;"
+            + "for(var k in o){seen++;var v;try{v=o[k];}catch(e){continue;}"
+            + "if(v===null||v===undefined)continue;var t=typeof v;"
+            + "if((t==='string'||t==='number')&&/openid|token|unionid|session|sign|secret|uid|passwd|password/i.test(k)){"
+            + "hits.push(p+'.'+k+' = '+String(v).slice(0,140));}"
+            + "else if(t==='object'&&d<3){try{walk(v,p+'.'+k,d+1);}catch(e){}}}}"
+            + "try{walk(window,'w',0);}catch(e){}"
+            + "try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);"
+            + "hits.push('[LS] '+k+' = '+String(localStorage.getItem(k)).slice(0,140));}}catch(e){}"
+            + "try{var app=getApp();if(app){"
+            + "if(app.getCache){var c=app.getCache('userInfo');"
+            + "if(c)hits.push('[cache] userInfo = '+JSON.stringify(c).slice(0,400));}"
+            + "if(app.globalData)hits.push('[global] '+JSON.stringify(app.globalData).slice(0,400));"
+            + "}}catch(e){}"
+            + "if(!hits.length)return '(没扫到凭据)';"
+            + "return hits.slice(0,150).join('\\n');})()";
+
+    static final String STORE_JS =
+            "(function(){var o={};try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);"
+            + "o[k]=localStorage.getItem(k);}}catch(e){return '';}"
+            + "return JSON.stringify(o);})()";
+
+    static void runCred(final TextView out) {
+        out.setText("扫描中…");
+        new Thread(() -> {
+            JSONObject r = VarsPanel.evalJs(CRED_JS);
+            String txt;
+            if (r.optBoolean("ok", false)) {
+                txt = r.optString("now", "");
+                if (txt.startsWith("\"") && txt.endsWith("\"") && txt.length() > 1) {
+                    txt = txt.substring(1, txt.length() - 1)
+                            .replace("\\n", "\n").replace("\\\"", "\"").replace("\\\\", "\\");
+                }
+            } else {
+                txt = "执行失败：" + r.optString("err", "");
+            }
+            final String s = txt;
+            UI.post(() -> {
+                if (out == null) return;
+                out.setText(s);
+                out.setBackground(round(0x14FFFFFF, 8));
+                out.setPadding(dp(7), dp(6), dp(7), dp(6));
+            });
+        }, "XhsSpyCred").start();
+    }
+
+    static void exportStorage(final TextView out) {
+        out.setText("导出中…");
+        new Thread(() -> {
+            JSONObject r = VarsPanel.evalJs(STORE_JS);
+            String raw = r.optBoolean("ok", false) ? r.optString("now", "") : "";
+            if (raw.length() > 1 && raw.startsWith("\"") && raw.endsWith("\"")) {
+                raw = raw.substring(1, raw.length() - 1)
+                        .replace("\\\"", "\"").replace("\\\\", "\\");
+            }
+            final String content = raw;
+            final String msg;
+            if (content.isEmpty() || "null".equals(content)) {
+                msg = "× 没读到 localStorage";
+            } else {
+                String name = "storage-" + System.currentTimeMillis() + ".json";
+                boolean ok = saveText(name, content);
+                msg = (ok ? "✓ 已存 " : "× 存失败 · 仅复制 ") + name
+                        + "\n" + content.length() + " 字";
+                if (ok) clip("storage", content);
+            }
+            UI.post(() -> out.setText(msg));
+        }, "XhsSpyExport").start();
+    }
+
+    /** 存到 Download/XhsSpy/，Android 10 走 MediaStore */
+    static boolean saveText(String name, String content) {
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                android.content.ContentResolver cr = sCtx.getContentResolver();
+                android.content.ContentValues cv = new android.content.ContentValues();
+                cv.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, name);
+                cv.put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/json");
+                cv.put(android.provider.MediaStore.Downloads.RELATIVE_PATH,
+                        android.os.Environment.DIRECTORY_DOWNLOADS + "/XhsSpy");
+                cv.put(android.provider.MediaStore.Downloads.IS_PENDING, 1);
+                android.net.Uri uri = cr.insert(
+                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (uri == null) return false;
+                java.io.OutputStream os = cr.openOutputStream(uri);
+                if (os == null) return false;
+                os.write(content.getBytes("UTF-8"));
+                os.close();
+                cv.clear();
+                cv.put(android.provider.MediaStore.Downloads.IS_PENDING, 0);
+                cr.update(uri, cv, null, null);
+                return true;
+            }
+            File dir = new File(android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS), "XhsSpy");
+            if (!dir.exists()) dir.mkdirs();
+            java.io.FileOutputStream fo = new java.io.FileOutputStream(new File(dir, name));
+            fo.write(content.getBytes("UTF-8"));
+            fo.close();
+            return true;
+        } catch (Throwable t) {
+            log("saveText " + t);
+            return false;
+        }
+    }
+
+    static boolean clip(String label, String s) {
+        try {
+            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    sCtx.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm == null) return false;
+            cm.setPrimaryClip(android.content.ClipData.newPlainText(label, s));
+            return true;
+        } catch (Throwable t) {
+            log("clip " + t);
+            return false;
+        }
+    }
+
+    /** 顶部闪一条提示，2.5 秒自己消失 */
+    static void flash(String msg) {
+        if (sContent == null) return;
+        final TextView t = bold(msg, 0xFFC8F2D8, 10);
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(dp(8), dp(5), dp(8), dp(5));
+        t.setBackground(round(0x2E22C55E, 8));
+        sContent.addView(t, 0);
+        UI.postDelayed(() -> {
+            try {
+                if (sContent != null) sContent.removeView(t);
+            } catch (Throwable ignored) {}
+        }, 2500);
+    }
+
+    // ------------------------------------------------------------ 神图君
+
+    static final String ST_TABLE =
+            "PXhw7UT1B0a9kQDKZsjIASmOezxYG4CHo5Jyfg2b8FLpEvRr3WtVnlqMidu6cN";
+    static final String ST_BASE = "https://stapi.youpengw.com/minixhs/v1/";
+
+    static String stSign(String token, long ts) {
+        String e = token + "###" + ts;
+        java.util.Random rnd = new java.util.Random();
+        StringBuilder sb = new StringBuilder(e.length() * 3);
+        for (int i = 0; i < e.length(); i++) {
+            char c = e.charAt(i);
+            sb.append(ST_TABLE.charAt(rnd.nextInt(62)));
+            sb.append(ST_TABLE.charAt((c + 3) % 62));
+            sb.append(ST_TABLE.charAt(rnd.nextInt(62)));
+        }
+        return sb.toString();
+    }
+
+    static void stSignTo(final String token, final TextView out) {
+        long ts = Math.round(System.currentTimeMillis() / 1000.0);
+        String sign = stSign(token, ts);
+        out.setText("timestamp " + ts + "\nsign " + sign + "\n长度 " + sign.length());
+    }
+
+    static void probeSt(final String token, final TextView out) {
+        out.setText("请求中…");
+        new Thread(() -> {
+            final String res = stGet("indexAuthorList", token);
+            UI.post(() -> out.setText(res));
+        }, "XhsSpySt").start();
+    }
+
+    /** 带签名 GET 一个接口，返回可读的短结果 */
+    static String stGet(String method, String token) {
+        HttpURLConnection c = null;
+        try {
+            long ts = Math.round(System.currentTimeMillis() / 1000.0);
+            URL u = new URL(ST_BASE + method);
+            c = (HttpURLConnection) u.openConnection();
+            c.setRequestMethod("GET");
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(10000);
+            c.setRequestProperty("token", token);
+            c.setRequestProperty("timestamp", String.valueOf(ts));
+            c.setRequestProperty("sign", stSign(token, ts));
+            c.setRequestProperty("User-Agent", "MicroMessenger/8.0.40");
+            int code = c.getResponseCode();
+            java.io.InputStream is = code >= 400 ? c.getErrorStream() : c.getInputStream();
+            StringBuilder sb = new StringBuilder();
+            if (is != null) {
+                byte[] buf = new byte[8192];
+                int r;
+                while ((r = is.read(buf)) > 0) {
+                    sb.append(new String(buf, 0, r, "UTF-8"));
+                    if (sb.length() > 6000) break;
+                }
+                is.close();
+            }
+            String raw = sb.toString();
+            int i = raw.lastIndexOf("{\"code\"");
+            String body = i >= 0 ? raw.substring(i) : raw;
+            if (body.length() > 700) body = body.substring(0, 700) + " …";
+            return "HTTP " + code + "\n" + method + "\n\n" + body;
+        } catch (Throwable t) {
+            return "× " + t;
+        } finally {
+            if (c != null) c.disconnect();
+        }
     }
 
     /** 进程诊断：pid / 端口 / 各进程的 WebView，能不能跑 JS 一眼看出来 */
