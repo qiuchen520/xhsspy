@@ -225,6 +225,9 @@ public class XhsSpy implements IXposedHookLoadPackage {
     static final java.util.List<Object> sWebViews =
             java.util.Collections.synchronizedList(new java.util.ArrayList<Object>());
 
+    static final java.util.Set<String> sHookedCls =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+
     static void registerWebView(Object wv) {
         if (wv == null) return;
         boolean added = false;
@@ -235,8 +238,24 @@ public class XhsSpy implements IXposedHookLoadPackage {
                 added = true;
             }
         }
-        if (added) {
-            try { log("webview", "登记 " + wv.getClass().getName()); } catch (Throwable ignored) {}
+        if (!added) return;
+        try {
+            final Class<?> c = wv.getClass();
+            String cn = c.getName();
+            log("webview", "登记 " + cn);
+            // findClass 按名字找经常失败（LSPatch 环境里 classloader 对不上），
+            // 但实例已经在手上，直接拿它的类去 hook，稳得多。
+            if (sHookedCls.add(cn)) {
+                XposedBridge.hookAllConstructors(c, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam p) {
+                        try { registerWebView(p.thisObject); } catch (Throwable ignored) {}
+                    }
+                });
+                log("webview", "按实例 hook 成功: " + cn);
+            }
+        } catch (Throwable t) {
+            try { log("webview", "按实例 hook 失败 " + t); } catch (Throwable ignored) {}
         }
     }
 
@@ -512,6 +531,8 @@ public class XhsSpy implements IXposedHookLoadPackage {
         // 一个个试，但总时长封顶。6 个 WebView 各等 6 秒就是 36 秒，
         // 表现起来跟卡死一模一样，必须掐住。
         long deadline = System.currentTimeMillis() + Math.max(800, timeoutMs);
+        // 最新的 WebView 往往是当前页面，从后往前试命中率更高
+        java.util.Collections.reverse(snapshot);
         for (Object wv : snapshot) {
             long left = deadline - System.currentTimeMillis();
             if (left < 200) break;
@@ -770,6 +791,45 @@ public class XhsSpy implements IXposedHookLoadPackage {
         } finally {
             if (c != null) try { c.disconnect(); } catch (Throwable ignored) {}
         }
+    }
+
+    /** 指定第几个 WebView 跑，调试用 */
+    public static String evalAt(int idx, String code) {
+        java.util.List<Object> snap;
+        synchronized (sWebViews) { snap = new java.util.ArrayList<>(sWebViews); }
+        if (idx < 0 || idx >= snap.size()) return "{\"ok\":false,\"err\":\"index out of range\"}";
+        String r = evalOn(snap.get(idx), code, 5000);
+        if (r == null) return "{\"ok\":false,\"err\":\"no response from #" + idx + "\"}";
+        try {
+            return "{\"ok\":true,\"v\":" + org.json.JSONObject.quote(r) + "}";
+        } catch (Throwable t) {
+            return "{\"ok\":false}";
+        }
+    }
+
+    /** 每个 WebView 的 URL，判断哪个才是目标页面 */
+    public static String webViewUrls() {
+        java.util.List<Object> snap;
+        synchronized (sWebViews) { snap = new java.util.ArrayList<>(sWebViews); }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < snap.size(); i++) {
+            Object o = snap.get(i);
+            sb.append('#').append(i).append(' ')
+              .append(o == null ? "null" : o.getClass().getSimpleName()).append(' ');
+            String u = null;
+            try {
+                java.lang.reflect.Method m = o.getClass().getMethod("getUrl");
+                u = String.valueOf(m.invoke(o));
+            } catch (Throwable ignored) {}
+            if (u == null) {
+                try {
+                    java.lang.reflect.Method m = o.getClass().getMethod("getOriginalUrl");
+                    u = String.valueOf(m.invoke(o));
+                } catch (Throwable ignored) {}
+            }
+            sb.append(u == null ? "?" : (u.length() > 90 ? u.substring(0, 90) : u)).append('\n');
+        }
+        return sb.toString();
     }
 
     /** /evals 的落点：跑完包成 {"ok":true,"v":"..."} */
