@@ -555,6 +555,49 @@ public class XhsSpy implements IXposedHookLoadPackage {
      * 不强转 android.webkit.WebView —— 小红书有 R1 内核，实现类不一定是它。
      * 先按标准 WebView 走，不行就用反射找 evaluateJavascript(String, ValueCallback)。
      */
+    /** 反射调一个无参/单参方法，R1 的实现不一定是标准 WebView */
+    static Object callAny(Object o, String name, Class<?>[] types, Object... args) {
+        if (o == null) return null;
+        try {
+            java.lang.reflect.Method m = o.getClass().getMethod(name, types);
+            m.setAccessible(true);
+            return m.invoke(o, args);
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    /**
+     * 兜底通道：evaluateJavascript 拿不到回调时，用 loadUrl 执行，
+     * 把结果塞进 document.title，再从 getTitle() 读回来。
+     * 会临时改页面标题，但能通就是好的。
+     */
+    static String evalViaTitle(final Object wv, final String code, long timeoutMs) {
+        try {
+            final String marker = "__xhs" + (System.nanoTime() % 100000);
+            String js = "(function(){try{var v=(" + code + ");"
+                    + "document.title='" + marker + "'+encodeURIComponent(String(v==null?'null':v));"
+                    + "}catch(e){document.title='" + marker + "ERR'+encodeURIComponent(String(e));}})()";
+            callAny(wv, "loadUrl", new Class<?>[]{String.class}, "javascript:" + js);
+            long wait = Math.max(900, Math.min(timeoutMs, 2500));
+            Thread.sleep(wait);
+            Object t = callAny(wv, "getTitle", new Class<?>[]{});
+            if (t == null) t = callAny(wv, "getOriginalUrl", new Class<?>[]{});
+            String title = String.valueOf(t);
+            if (title != null && title.startsWith(marker)) {
+                String body = title.substring(marker.length());
+                if (body.startsWith("ERR")) {
+                    return null;
+                }
+                try {
+                    return java.net.URLDecoder.decode(body, "UTF-8");
+                } catch (Throwable ignored) {
+                    return body;
+                }
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
     static String evalOn(final Object wv, final String code, long timeoutMs) {
         if (wv == null) return null;
         final Object lock = new Object();
@@ -631,7 +674,9 @@ public class XhsSpy implements IXposedHookLoadPackage {
                 try { lock.wait(Math.max(1000, timeoutMs)); } catch (Throwable ignored) {}
             }
         }
-        return box[0];
+        if (box[0] != null) return box[0];
+        // 回调没来，走 loadUrl + title 兜底
+        return evalViaTitle(wv, code, timeoutMs);
     }
 
     /** 子进程告诉主进程「我在这个端口」，带重试，主进程还没起也没关系 */
