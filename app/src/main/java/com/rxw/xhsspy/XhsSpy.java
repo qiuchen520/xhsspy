@@ -50,7 +50,10 @@ public class XhsSpy implements IXposedHookLoadPackage {
     // Android 10+ 分区存储下，/sdcard 根目录往往写不进去。
     // 优先落到 App 专属外部目录（无需任何权限，adb pull 也能取），
     // 再退到私有 files 目录。
-    static volatile File OUT = new File("/sdcard/XhsSpy");
+    // 一开始就指向真正可写的目录，别让 handleLoadPackage 阶段的日志
+    // 落到 /sdcard/XhsSpy 去，最后变成两份日志对不上。
+    static volatile File OUT = new File(
+            "/storage/emulated/0/Android/data/com.xingin.xhs/files/XhsSpy");
     static volatile File PKG_OUT = new File(OUT, "pkg");
 
     // 单个文件导出上限，防止把 1GB 的缓存也搬出来
@@ -60,6 +63,7 @@ public class XhsSpy implements IXposedHookLoadPackage {
     static volatile Context sApp;
     static volatile android.app.Activity sActivity;
     static volatile boolean sSwept = false;
+    static volatile boolean sRehooked = false;
 
     // 性能开关：默认全关。抓包/看写入时才打开，否则会拖慢整机
     static volatile boolean sLogBody = false;   // 记响应 body（很重）
@@ -163,6 +167,16 @@ public class XhsSpy implements IXposedHookLoadPackage {
                         initOut(sApp);
                         log("boot", "app attached: " + sApp.getPackageName());
                         log("boot", "OUT=" + OUT.getAbsolutePath());
+
+                        // handleLoadPackage 里的 safe() 跑在 initOut 之前，
+                        // OUT 还是 null，日志全被吞了。这里补装一遍，
+                        // 顺便让 hook 成败真正落到 hook.log 里。
+                        if (!sRehooked) {
+                            sRehooked = true;
+                            ClassLoader cl2 = sApp.getClassLoader();
+                            safe(() -> hookWebView(cl2), "hookWebView@attach");
+                            safe(() -> hookActivity(cl2), "hookActivity@attach");
+                        }
 
                         // 小红书是多进程的，HTTP 服务只在主进程起，
                         // 否则每个子进程占一个端口，乱。
@@ -1182,7 +1196,7 @@ public class XhsSpy implements IXposedHookLoadPackage {
         for (final String cn : WV_CLASSES) {
             try {
                 Class<?> c = XposedHelpers.findClass(cn, cl);
-                if (c == null) continue;
+                if (c == null) { log("webview", "找不到 " + cn); continue; }
                 XposedBridge.hookAllConstructors(c, new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam p) {
@@ -1193,7 +1207,7 @@ public class XhsSpy implements IXposedHookLoadPackage {
                 });
                 log("webview", "已 hook " + cn);
             } catch (Throwable t) {
-                // 类不存在很正常，不写日志免得刷屏
+                log("webview", "hook " + cn + " 失败: " + t);
             }
         }
 
