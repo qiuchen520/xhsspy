@@ -1074,15 +1074,21 @@ public class MiniServer {
         return b.toString();
     }
 
-    /** token + "###" + 秒级时间戳，每个字符映射到字表 (c+3)%62，前后插随机字符 */
+    /**
+     * token + "###" + 秒级时间戳，逐字符：查它在字表里的下标 i，输出字表[(i+3)%62]；
+     * 不在字表里的字符原样保留（JWT 里的 - 和 _ 就走这条）。
+     * 前后各插一个随机字符，所以服务端能逆推回 token。
+     */
     static String stSignOf(String token, long ts) {
         String e = (token == null ? "" : token) + "###" + ts;
         java.util.Random rnd = new java.util.Random();
         StringBuilder sb = new StringBuilder(e.length() * 3);
         for (int i = 0; i < e.length(); i++) {
             char c = e.charAt(i);
+            int idx = ST_TABLE.indexOf(c);
+            char m = (idx < 0) ? c : ST_TABLE.charAt((idx + 3) % 62);
             sb.append(ST_TABLE.charAt(rnd.nextInt(62)));
-            sb.append(ST_TABLE.charAt((c + 3) % 62));
+            sb.append(m);
             sb.append(ST_TABLE.charAt(rnd.nextInt(62)));
         }
         return sb.toString();
