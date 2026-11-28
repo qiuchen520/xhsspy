@@ -4,10 +4,43 @@
 (function(){
   if (window.__XHS_HACKS && window.__XHS_HACKS.__v === 2) return 'already';
 
-  var H = {}; H.__v = 2;
-  var timers = {};
-  function every(id, ms, fn){ if (timers[id]) clearInterval(timers[id]); timers[id] = setInterval(fn, ms); }
-  function stop(id){ if (timers[id]) { clearInterval(timers[id]); timers[id] = null; } }
+  var H = {}; H.__v = 3;
+
+  /* ===== 统一调度 =====
+   * 原来每个功能各挂一个 setInterval，esp 50ms + aim 16ms + freeze 16ms + fly 16ms
+   * 每秒两百多次回调，把游戏渲染帧夹死了。
+   * 现在全部挂在 requestAnimationFrame 上，跟着屏幕刷新走，还能分帧降频。
+   */
+  var tasks = {};      // id -> {every: 每几帧跑一次, h: 回调}
+  var rafId = 0, frameN = 0;
+
+  function loop(){
+    rafId = requestAnimationFrame(loop);
+    frameN++;
+    for (var id in tasks) {
+      var t = tasks[id];
+      if (frameN % t.every !== 0) continue;
+      try { t.h(); } catch(e) {}
+    }
+  }
+
+  function every(id, ms, fn){
+    var n = Math.max(1, Math.round(ms / 17));
+    tasks[id] = { every: n, h: fn };
+    if (!rafId) loop();
+  }
+
+  function stop(id){
+    delete tasks[id];
+    var empty = true;
+    for (var k in tasks) { empty = false; break; }
+    if (empty && rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+  }
+
+  function stopAll(){
+    for (var k in tasks) delete tasks[k];
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+  }
 
   /* ================= 实体捕获 ================= */
   H.capture = { on: function(){
@@ -79,7 +112,7 @@
         box.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:99997';
         document.body.appendChild(box);
       }
-      every('esp', 50, function(){
+      every('esp', 100, function(){
         var ents = window.__ents || [], me = window.__player;
         var html = '', w = window.innerWidth, h = window.innerHeight;
         for (var i = 0; i < ents.length; i++) {
@@ -126,7 +159,7 @@
         var t = ents[i];
         if (t.team !== 'blue' && !t.__frz) t.__frz = {x:t.pos.x, y:t.pos.y, z:t.pos.z};
       }
-      every('freeze', 16, function(){
+      every('freeze', 50, function(){
         var arr = window.__ents || [];
         for (var j = 0; j < arr.length; j++) {
           var b = arr[j];
@@ -247,7 +280,7 @@
       H.capture.on();
       window.__flyY = window.__flyY || 4;
       window.__flyOn = true;
-      every('fly', 16, function(){
+      every('fly', 33, function(){
         var p = window.__player;
         if (!p || !p.pos) return;
         p.pos.y = window.__flyY;
@@ -412,7 +445,7 @@
     on: function(){
       H.capture.on();
       window.__sjOn = true;
-      every('sj', 60, function(){
+      every('sj', 100, function(){
         var p = window.__player;
         if (!p || !p.pos) return;
         if (p.onGround && p.vel && Math.abs(p.vel.y) < 0.6) {
@@ -430,7 +463,7 @@
     on: function(){
       H.capture.on();
       window.__aimOn = true;
-      every('aim', 16, function(){
+      every('aim', 33, function(){
         var p = window.__player;
         if (!p || !p.pos || !p.alive) return;
         if (window.__flyOn) return;
@@ -555,6 +588,17 @@
   };
 
   H.warmup = function(){ H.capture.on(); return 'warm'; };
+
+  H.panic = function(){
+    stopAll();
+    window.__godOn = false; window.__oneShot = false; window.__espOn = false;
+    window.__freezeOn = false; window.__flyOn = false; window.__slowOn = false;
+    window.__noclipOn = false; window.__aimOn = false; window.__tpOn = false;
+    window.__noSpreadOn = false; window.__sjOn = false; window.__speedMul = 1;
+    try { H.fly.ui(false); } catch(e) {}
+    var b = document.getElementById('__esp'); if (b) b.innerHTML = '';
+    return 'panic: all off';
+  };
 
   H.status = function(){
     return JSON.stringify({
