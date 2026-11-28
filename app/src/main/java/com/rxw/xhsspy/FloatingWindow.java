@@ -239,8 +239,9 @@ public class FloatingWindow {
 
         // 胶囊
         sCapsule = makeCapsule();
+        // 固定宽度：展开时窗口会变宽，但胶囊本身不能被拉长
         sRoot.addView(sCapsule, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(CAP_H)));
+                dp(CAP_W), dp(CAP_H)));
 
         // 面板
         sPanel = makePanel();
